@@ -336,14 +336,28 @@ int main(int argc, char **argv) {
 
     if (!mode || !outpath) { print_usage(); return 1; }
 
-    if (strcmp(mode, "h36") == 0) {
+    if (strcmp(mode, "auto") == 0) {
+        fprintf(stderr, "[auto] Running all hypotheses from smallest to largest...\n");
+        // Phase 0: H20 (94M)
+        run_h20(1230768000, 94675968, outpath);
+        // Phase 1: H28 (10B)
+        run_h28(0, 10000000000, outpath);
+        // Phase 2: H36 around each target
+        uint64_t targets[] = {1268650443000, 1279120623000, 1279124810000, 1279334345000, 1284033556000, 1284530403000};
+        for (int i = 0; i < 6; i++) {
+            run_h36(targets[i] - 604800000, 1209600000, outpath);
+        }
+        // Phase 3: H36 full sweep (94.6B)
+        run_h36(1230768000000, 94675968000, outpath);
+        // Phase 4: H03 for key timestamp
+        run_h03(1268728843, 0, 65536, outpath);
+    } else if (strcmp(mode, "h36") == 0) {
         if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h36\n"); return 1; }
         run_h36(start_val, count_val, outpath);
     } else if (strcmp(mode, "h28") == 0) {
         if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h28\n"); return 1; }
         run_h28(start_val, count_val, outpath);
     } else if (strcmp(mode, "h48") == 0) {
-        // Same as h28 (uint48 fits in uint64 range)
         if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h48\n"); return 1; }
         run_h28(start_val, count_val, outpath);
     } else if (strcmp(mode, "h20") == 0) {
