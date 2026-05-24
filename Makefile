@@ -1,5 +1,5 @@
 CC = nvcc
-CFLAGS = -O2 -arch=sm_100 -std=c++17
+CFLAGS = -O2 -arch=native -std=c++17
 TARGET = seedhammer
 OBJS = main.o
 
