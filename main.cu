@@ -285,16 +285,23 @@ static void write_out(const char *path, uint8_t *data, uint64_t bytes) {
     fwrite(data,1,bytes,f);fclose(f);
 }
 
+/* Helper: format seconds as hh:mm:ss */
+static void fmt_secs(double s, char *buf, int sz) {
+    int h=(int)(s/3600), m=(int)((s-h*3600)/60), sec=(int)(s-h*3600-m*60);
+    if(h>0) snprintf(buf,sz,"%dh%02dm%02ds",h,m,sec);
+    else if(m>0) snprintf(buf,sz,"%dm%02ds",m,sec);
+    else snprintf(buf,sz,"%ds",sec);
+}
+
 static void run_core(const char *label, void (*kern)(dim3, dim3, uint64_t, uint64_t, uint8_t*),
                      uint64_t start, uint64_t count, const char *outpath) {
     const int TH=256;uint64_t batch=50000000;
     uint8_t *gpu;cudaMalloc(&gpu,batch*32);
-    fprintf(stderr,"[%s] Generating %llu keys...\n",label,(unsigned long long)count);
+    double t0=(double)clock()/CLOCKS_PER_SEC;
+    fprintf(stderr,"[%s] Generating %llu keys (batch=%llu)...\n",label,(unsigned long long)count,(unsigned long long)batch);
     for(uint64_t off=0;off<count;off+=batch){
         uint64_t b=(off+batch>count)?(count-off):batch;
         uint64_t blk=(b+TH-1)/TH;
-        // H36, H28, H20, android_secrand all take (uint64_t start, uint64_t count, uint8_t *out)
-        // We dispatch via a generic approach: use template-like casts
         if(strcmp(label,"h36")==0)gen_h36<<<(int)blk,TH>>>(start+off,b,gpu);
         else if(strcmp(label,"h28")==0||strcmp(label,"h48")==0)gen_h28<<<(int)blk,TH>>>(start+off,b,gpu);
         else if(strcmp(label,"h20")==0)gen_h20<<<(int)blk,TH>>>(start+off,b,gpu);
@@ -306,8 +313,23 @@ static void run_core(const char *label, void (*kern)(dim3, dim3, uint64_t, uint6
         uint8_t *host=(uint8_t*)malloc(b*32);
         cudaMemcpy(host,gpu,b*32,cudaMemcpyDeviceToHost);
         write_out(outpath,host,b*32);free(host);
-        fprintf(stderr,"[%s] %llu/%llu (%.1f%%)\n",label,(unsigned long long)(off+b),(unsigned long long)count,100.0*(off+b)/count);
+
+        double now=(double)clock()/CLOCKS_PER_SEC;
+        double elapsed=now-t0;
+        double rate=elapsed>0.0?(double)(off+b)/elapsed:0.0;
+        uint64_t remain=(off+b<count)?(count-(off+b)):0;
+        double eta=rate>0.0?(double)remain/rate:0.0;
+        double pct=100.0*(double)(off+b)/(double)count;
+        char e_str[32], eta_str[32];
+        fmt_secs(elapsed,e_str,sizeof(e_str));
+        if(eta>0) fmt_secs(eta,eta_str,sizeof(eta_str));
+        else snprintf(eta_str,sizeof(eta_str),"?");
+        fprintf(stderr,"\r[%s] [%5.1f%%] %llu/%llu | %.0f k/s | %s elapsed | ETA %s       ",
+            label,pct,(unsigned long long)(off+b),(unsigned long long)count,
+            rate/1000.0,e_str,eta_str);
+        fflush(stderr);
     }
+    fprintf(stderr,"\n");
     cudaFree(gpu);
 }
 
@@ -338,6 +360,7 @@ static void run_debian_ssl(const char *outpath) {
 static void run_randstorm(uint64_t seed, uint64_t count, const char *outpath) {
     const int TH=256;uint64_t batch=50000000;
     uint8_t *gpu;cudaMalloc(&gpu,batch*32);
+    double t0=(double)clock()/CLOCKS_PER_SEC;
     fprintf(stderr,"[randstorm] Generating %llu keys...\n",(unsigned long long)count);
     for(uint64_t off=0;off<count;off+=batch){
         uint64_t b=(off+batch>count)?(count-off):batch;
@@ -347,8 +370,23 @@ static void run_randstorm(uint64_t seed, uint64_t count, const char *outpath) {
         uint8_t *host=(uint8_t*)malloc(b*32);
         cudaMemcpy(host,gpu,b*32,cudaMemcpyDeviceToHost);
         write_out(outpath,host,b*32);free(host);
-        fprintf(stderr,"[randstorm] %llu/%llu (%.1f%%)\n",(unsigned long long)(off+b),(unsigned long long)count,100.0*(off+b)/count);
+
+        double now=(double)clock()/CLOCKS_PER_SEC;
+        double elapsed=now-t0;
+        double rate=elapsed>0.0?(double)(off+b)/elapsed:0.0;
+        uint64_t remain=(off+b<count)?(count-(off+b)):0;
+        double eta=rate>0.0?(double)remain/rate:0.0;
+        double pct=100.0*(double)(off+b)/(double)count;
+        char e_str[32],eta_str[32];
+        fmt_secs(elapsed,e_str,sizeof(e_str));
+        if(eta>0) fmt_secs(eta,eta_str,sizeof(eta_str));
+        else snprintf(eta_str,sizeof(eta_str),"?");
+        fprintf(stderr,"\r[randstorm] [%5.1f%%] %llu/%llu | %.0f k/s | %s elapsed | ETA %s       ",
+            pct,(unsigned long long)(off+b),(unsigned long long)count,
+            rate/1000.0,e_str,eta_str);
+        fflush(stderr);
     }
+    fprintf(stderr,"\n");
     cudaFree(gpu);
 }
 
