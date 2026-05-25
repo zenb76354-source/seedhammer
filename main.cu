@@ -471,6 +471,16 @@ int main(int argc, char **argv) {
         for(int i=0;i<6;i++)run_core("h36",NULL,tgt[i]-604800000,1209600000,outpath);
         // H36 full: 94.6B
         run_core("h36",NULL,1230768000000,94675968000,outpath);
+        // H03 for ALL ts from 2009-2012 (step=3600 to keep feasible)
+        fprintf(stderr,"[auto] H03: all timestamps from 2009-2012...\n");
+        for(uint64_t ts=1230768000;ts<=1356998400;ts+=3600)
+            run_h03(ts,0,65536,outpath);
+        // Randstorm V8: 2^48 full key space
+        fprintf(stderr,"[auto] Randstorm V8: generating 2^48 keys...\n");
+        run_core("randstorm_v8",NULL,0,281474976710656ULL,outpath);
+        // Randstorm JSC: 2^32 full key space
+        fprintf(stderr,"[auto] Randstorm JSC: generating 2^32 keys...\n");
+        run_core("randstorm_jsc",NULL,0,4294967296ULL,outpath);
         fprintf(stderr,"[auto] All hypotheses complete.\n");
     }
     else if(strcmp(mode,"h36")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("h36",NULL,start,count,outpath);}
