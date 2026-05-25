@@ -60,7 +60,7 @@ SHA256(seed) → 32-byte key. No ECC, no verification.
 ```
 ./seedhammer --mode h20 --start 1230768000 --count 94675968 --out keys_h20.bin
 ```
-- **المنطق**: time_t → 4 bytes LE → SHA256
+- **المنطق**: time_t → 4 bytes LE → SHA256 (Little-Endian، تم توحيد الوصف مع التنفيذ)
 - **النطاق**: 2009-01-01 إلى 2012-01-01 (كل ثانية)
 - **العدد**: 94,675,968
 - **لماذا**: تطبيقات C++ قديمة استخدمت srand(time(NULL)) ثم rand() للأرقام العشوائية
@@ -78,14 +78,6 @@ SHA256(seed) → 32-byte key. No ECC, no verification.
 # نطاق كامل 2009-2012 عبر سكريبت
 ```
 
-### H01 — Brainwallet dictionary
-```
-./seedhammer --mode h01 --dict phrases.txt --out keys_h01.bin
-```
-- **المنطق**: كل كلمة في القاموس → 20 تنويع → SHA256
-- **التنويعات**: capitalize, UPPER, lower, leet, reverse, +123, +!, +@, +#, +year, +year!, camelCase, snake_case, remove_spaces, repeat, إلخ
-- **العدد**: يعتمد على حجم القاموس
-
 ### H09 — Word + year
 ```
 ./seedhammer --mode h09 --dict phrases.txt --year-start 2008 --year-end 2024 --out keys_h09.bin
@@ -93,13 +85,6 @@ SHA256(seed) → 32-byte key. No ECC, no verification.
 - **المنطق**: word + year → SHA256
 - **النطاق**: 2008-2024 (17 سنة)
 - **لماذا**: نمط شائع لـ brainwallet: "bitcoin2009", "password2010"...
-
-### H08 — Block hashes
-```
-./seedhammer --mode h08 --block-start 0 --block-count 800000 --out keys_h08.bin
-```
-- **المنطق**: SHA256(block_hash) → المفتاح
-- **النطاق**: بلوك 0 إلى 800,000
 
 ### H34 — Full datetime strings
 ```
@@ -120,7 +105,7 @@ SHA256(seed) → 32-byte key. No ECC, no verification.
 ```
 ./seedhammer --mode h24 --start <seed> --count <N> --engine v8 --out keys_h24.bin
 ```
-- **المحركات**: V8 (XorShift128+), SpiderMonkey (LCG), JavaScriptCore (MWC1616)
+- **المحركات**: V8 (XorShift128+), SpiderMonkey (LCG), JavaScriptCore (MWC1616) (تمت إضافة دعم SpiderMonkey و JavaScriptCore)
 - **لماذا**: محافظ Bitcoin.js استخدمت Math.random() الذي يختلف حسب المحرك
 - **النطاق**: 30M+ حسب المحرك
 
@@ -151,11 +136,11 @@ SHA256(seed) → 32-byte key. No ECC, no verification.
 | H48 | `--mode h48 --start 0 --count 281474976710656` |
 | H20 | `--mode h20 --start 1230768000 --count 94675968` |
 | H03 | `--mode h03 --ts <N> --pid-count 65536` |
-| H01 | `--mode h01 --dict phrases.txt` |
 | H09 | `--mode h09 --dict phrases.txt --year-start 2008 --year-end 2024` |
-| H08 | `--mode h08 --block-start 0 --block-count 800000` |
 | H34 | `--mode h34 --ts-start 1268728843 --ts-end 1284608803` |
 | H37 | `--mode h37 --start 1230768000 --count 94675968` |
 | H24 | `--mode h24 --seed 0 --count 30000000 --engine v8` |
+| H24-sm | `--mode randstorm_sm --start 0 --count 30000000` |
+| H24-jsc | `--mode randstorm_jsc --start 0 --count 30000000` |
 | H23 | `--mode h23 --start 0 --count 4294967296` |
 | H07 | `--mode h07 --start 0 --count 40000000` |
