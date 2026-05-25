@@ -390,6 +390,68 @@ static void run_randstorm(uint64_t seed, uint64_t count, const char *outpath) {
     cudaFree(gpu);
 }
 
+static void run_brainwallet(const char *dict_path, const char *outpath) {
+    // Build word list from dict file
+    FILE *df=fopen(dict_path,"rb");
+    if(!df){fprintf(stderr,"brainwallet: cannot open %s\n",dict_path);exit(1);}
+    fseek(df,0,SEEK_END);long dsz=ftell(df);rewind(df);
+    char *txt=(char*)malloc(dsz+1);
+    fread(txt,1,dsz,df);txt[dsz]=0;fclose(df);
+    
+    // Count words
+    uint32_t nw=0;
+    for(long i=0;i<dsz;i++)if(txt[i]=='\n')nw++;
+    
+    // Build dict: 64-byte padded words
+    uint8_t *dict=(uint8_t*)calloc(nw,64);
+    uint32_t wi=0;long p=0;
+    for(uint32_t i=0;i<nw;i++){
+        int c=0;
+        while(p<dsz&&txt[p]!='\n'&&txt[p]!='\r'&&p<dsz){dict[i*64+c]=(uint8_t)txt[p];p++;c++;}
+        while(p<dsz&&(txt[p]=='\n'||txt[p]=='\r'))p++;
+    }
+    free(txt);
+    
+    fprintf(stderr,"[brainwallet] %u words loaded from %s\n",nw,dict_path);
+    
+    // Upload dict to GPU
+    uint8_t *gpu_dict;cudaMalloc(&gpu_dict,nw*64);
+    cudaMemcpy(gpu_dict,dict,nw*64,cudaMemcpyHostToDevice);
+    
+    // Generate: words × years (2009-2012) × 10 variants
+    uint32_t year_start=2009,year_count=4;
+    uint64_t total=(uint64_t)nw*year_count*10;
+    const int TH=256;
+    uint64_t batch=50000000;
+    uint8_t *gpu;cudaMalloc(&gpu,batch*32);
+    
+    double t0=(double)clock()/CLOCKS_PER_SEC;
+    fprintf(stderr,"[brainwallet] Generating %llu keys (%u words, %u years)...\n",
+            (unsigned long long)total,nw,year_count);
+    
+    for(uint64_t off=0;off<total;off+=batch){
+        uint64_t b=(off+batch>total)?(total-off):batch;
+        uint64_t blk=(b+TH-1)/TH;
+        gen_brainwallet<<<(int)blk,TH>>>(gpu_dict,nw,year_start,year_count,batch*32>total*32?NULL:(b>0?gpu:NULL));
+        cudaDeviceSynchronize();
+        uint8_t *host=(uint8_t*)malloc(b*32);
+        cudaMemcpy(host,gpu,b*32,cudaMemcpyDeviceToHost);
+        write_out(outpath,host,b*32);free(host);
+        
+        double now=(double)clock()/CLOCKS_PER_SEC;
+        double elapsed=now-t0;
+        double rate=elapsed>0.0?(double)(off+b)/elapsed:0.0;
+        double pct=100.0*(double)(off+b)/(double)total;
+        char e_str[32];
+        fmt_secs(elapsed,e_str,sizeof(e_str));
+        fprintf(stderr,"\r[brainwallet] [%5.1f%%] %llu/%llu | %.0f k/s | %s elapsed       ",
+            pct,(unsigned long long)(off+b),(unsigned long long)total,rate/1000.0,e_str);
+        fflush(stderr);
+    }
+    fprintf(stderr,"\n[brainwallet] Done.\n");
+    cudaFree(gpu);cudaFree(gpu_dict);free(dict);
+}
+
 // -----------------------------------------------------------------
 // Print usage
 // -----------------------------------------------------------------
@@ -410,12 +472,14 @@ static void print_usage() {
         "    android_sec    Android SecureRandom (2013 bug)\n"
         "    randstorm_sm   BitcoinJS SpiderMonkey LCG\n"
         "    randstorm_jsc  BitcoinJS JavaScriptCore MWC1616\n"
+        "    brainwallet    Password-based keys with dictionary\n"
         "  --start N       Start value\n"
         "  --count N       Number of keys\n"
         "  --ts N          Timestamp (for h03)\n"
         "  --pid-start N   PID start (for h03, default 0)\n"
         "  --pid-count N   PID count (for h03, default 32768)\n"
         "  --out FILE      Output file (use - for stdout)\n"
+        "  --dict FILE     Dictionary file (for brainwallet)\n"
         "\nExamples:\n"
         "  ./seedhammer --mode h36 --start 1223424000000 --count 50000000 --out keys.bin\n"
         "  ./seedhammer --mode auto --out keys_all.bin\n"
@@ -432,7 +496,7 @@ int main(int argc, char **argv) {
     cudaGetDeviceProperties(&p,0);
     fprintf(stderr,"SeedHammer on %s (SM%d.%d, %d SMs)\n",p.name,p.major,p.minor,p.multiProcessorCount);
 
-    const char *mode=NULL,*outpath=NULL;
+    const char *mode=NULL,*outpath=NULL,*dictpath=NULL;
     uint64_t start=0,count=0;
     uint32_t ts=0,pid_start=0,pid_cnt=32768;
 
@@ -444,6 +508,7 @@ int main(int argc, char **argv) {
         else if(strcmp(argv[i],"--pid-start")==0&&i+1<argc)pid_start=(uint32_t)parse_u64(argv[++i]);
         else if(strcmp(argv[i],"--pid-count")==0&&i+1<argc)pid_cnt=(uint32_t)parse_u64(argv[++i]);
         else if(strcmp(argv[i],"--out")==0&&i+1<argc)outpath=argv[++i];
+        else if(strcmp(argv[i],"--dict")==0&&i+1<argc)dictpath=argv[++i];
         else{print_usage();return 1;}
     }
     if(!mode||!outpath){print_usage();return 1;}
@@ -471,16 +536,19 @@ int main(int argc, char **argv) {
         for(int i=0;i<6;i++)run_core("h36",NULL,tgt[i]-604800000,1209600000,outpath);
         // H36 full: 94.6B
         run_core("h36",NULL,1230768000000,94675968000,outpath);
-        // H03 for ALL ts from 2009-2012 (step=3600 to keep feasible)
-        fprintf(stderr,"[auto] H03: all timestamps from 2009-2012...\n");
-        for(uint64_t ts=1230768000;ts<=1356998400;ts+=3600)
+        // H03: ALL timestamps 2009-2012 (step=1 second)
+        fprintf(stderr,"[auto] H03: all seconds 2009-2012 (1230768000..1356998400)...\n");
+        for(uint64_t ts=1230768000;ts<=1356998400;ts+=1)
             run_h03(ts,0,65536,outpath);
-        // Randstorm V8: 2^48 full key space
-        fprintf(stderr,"[auto] Randstorm V8: generating 2^48 keys...\n");
+        // Randstorm V8: full 2^48
+        fprintf(stderr,"[auto] Randstorm V8: generating full 2^48 keys...\n");
         run_core("randstorm_v8",NULL,0,281474976710656ULL,outpath);
-        // Randstorm JSC: 2^32 full key space
-        fprintf(stderr,"[auto] Randstorm JSC: generating 2^32 keys...\n");
+        // Randstorm JSC: full 2^32
+        fprintf(stderr,"[auto] Randstorm JSC: generating full 2^32 keys...\n");
         run_core("randstorm_jsc",NULL,0,4294967296ULL,outpath);
+        // Brainwallet: dict-based password sweep
+        fprintf(stderr,"[auto] Brainwallet: password-based keys (2009-2012 words)...\n");
+        run_brainwallet("/seedhammer/passwords.txt",outpath);
         fprintf(stderr,"[auto] All hypotheses complete.\n");
     }
     else if(strcmp(mode,"h36")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("h36",NULL,start,count,outpath);}
@@ -492,6 +560,7 @@ int main(int argc, char **argv) {
     else if(strcmp(mode,"randstorm_sm")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("randstorm_sm",NULL,start,count,outpath);}
     else if(strcmp(mode,"randstorm_jsc")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("randstorm_jsc",NULL,start,count,outpath);}
     else if(strcmp(mode,"android_sec")==0){if(!count){fprintf(stderr,"--count required\n");return 1;}run_core("android_sec",NULL,start,count,outpath);}
+    else if(strcmp(mode,"brainwallet")==0){if(!dictpath)dictpath="/seedhammer/passwords.txt";run_brainwallet(dictpath,outpath);}
     else{fprintf(stderr,"seedhammer: unknown mode '%s'\n",mode);return 1;}
 
     fprintf(stderr,"SeedHammer done.\n");
