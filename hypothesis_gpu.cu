@@ -922,3 +922,38 @@ D_FUNC uint32_t mode_nonce_crosschain(
 //   Reduces partial products with Barrett reduction
 //
 // For now: standard implementation. Future: wmma.h header.
+
+// ================================================================
+// Auto-cycling: Autonomous mode sequencer
+// ================================================================
+// The orchestrator runs modes in sequence:
+//   1. Each mode runs for a configurable duration or keys count
+//   2. If the verifier sends STOP, all generation halts
+//   3. After exhausting all modes, wrap around and repeat
+//      (with different seeds/ranges each cycle)
+//
+// Cycle order (2009-2012 priority):
+//   H36(timestamp) ? M(MWC) ? R(Randstorm) ? C(Core0.1-0.3)
+//   ? J(Android) ? W(Instawallet) ? B(MyBitcoin) ? A(BitAddress)
+//   ? D(Core0.3stack) ? E(MyWallet) ? L(BitBills) ? S(Electrum)
+//   ? T(Armory) ? F(P2Pool) ? G(SpiderMonkey) ? Q(JSC/WebKit)
+//   ? Y(WinRNG) ? M2(MWC-LE) ? R2(Randstorm-LE) ? CQ(Chinese)
+//   ? LC(Linux libc) ? RS(ShortR) ? Z(Zero Mouse) ? K(MiniKeys)
+//   ? P(Password) ? X(SmallExp)
+//
+// Each mode iteration advances the timestamp/seed range.
+// On STOP signal: save checkpoint and exit.
+
+#define NUM_MODES 25
+
+static const char MODE_LABELS[NUM_MODES][8] = {
+    "H", "M", "R", "C", "J", "W", "B", "A", "D", "E",
+    "L", "S", "T", "F", "G", "Q", "Y", "M2", "R2", "CQ",
+    "LC", "RS", "Z", "K", "X"
+};
+
+// Checkpoint: save current mode + offset for resume
+D_FUNC void save_auto_checkpoint(uint32_t mode_idx, uint64_t key_offset, const char *path){
+    // Write: mode_idx(4B) + key_offset(8B) = 12 bytes
+    // In GPU: atomic write to pinned memory for host to flush
+}
