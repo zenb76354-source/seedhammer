@@ -19,8 +19,8 @@ static const char *MODES[] = {
 #define KEYS_PER_BATCH (1024ULL * 1024 * 8) // 8M keys per batch
 #define CHECKPOINT_FILE "autocycle_checkpoint.txt"
 #define STOP_FLAG_FILE "STOP"
-#define THREADS 256
-#define BLOCKS 4096
+#define THREADS 1024
+#define BLOCKS 8192
 #define KEYS_PER_KERNEL ((uint64_t)THREADS * (uint64_t)BLOCKS)
 
 int check_stop_signal(void){
@@ -175,43 +175,42 @@ void run_mode(char mode_char,
     printf("GPU: %s, total keys: %llu\n", prop.name, (unsigned long long)total_keys);
 
     while(processed < total_keys){
-        uint64_t left = total_keys - processed;
-        uint64_t batch = left < KEYS_PER_KERNEL ? left : KEYS_PER_BATCH;
-        if(batch > KEYS_PER_KERNEL) batch = KEYS_PER_KERNEL;
+        // Inner loop: launch kernels until all keys in this batch are done
+        while(processed < total_keys){
+            uint64_t left = total_keys - processed;
+            uint64_t sub_batch = left < KEYS_PER_KERNEL ? left : KEYS_PER_KERNEL;
 
-        uint64_t base_ts = ts_start + (processed / (uint64_t)seed_range);
-        uint32_t base_seed = seed_start + (uint32_t)(processed % seed_range);
+            uint64_t base_ts = ts_start + (processed / (uint64_t)seed_range);
+            uint32_t base_seed = seed_start + (uint32_t)(processed % seed_range);
 
-        // Launch GPU kernel
-        uint64_t blocks = (batch + THREADS - 1) / THREADS;
-        if(blocks > 65535) blocks = 65535;
+            // Launch GPU kernel
+            unsigned int blocks = (unsigned int)((sub_batch + THREADS - 1) / THREADS);
+            if(blocks > 65535u) blocks = 65535u;
 
-        gen_keys_kernel<<<(unsigned int)blocks, THREADS>>>(
-            mode_char, base_ts, base_seed, seed_range, d_priv, batch);
+            gen_keys_kernel<<<blocks, THREADS>>>(
+                mode_char, base_ts, base_seed, seed_range, d_priv, sub_batch);
 
-        cudaDeviceSynchronize();
+            cudaDeviceSynchronize();
 
-        // Copy results to host
-        size_t copy_size = batch * 32;
-        cudaMemcpy(h_priv, d_priv, copy_size, cudaMemcpyDeviceToHost);
+            // Write sub_batch to file
+            cudaMemcpy(h_priv, d_priv, sub_batch * 32, cudaMemcpyDeviceToHost);
+            FILE *f = fopen(output_path, "ab");
+            if(!f) f = fopen(output_path, "wb");
+            if(f){ fwrite(h_priv, 1, sub_batch * 32, f); fclose(f); }
 
-        // Write to file
-        FILE *f = fopen(output_path, "ab");
-        if(!f) f = fopen(output_path, "wb");
-        if(f){ fwrite(h_priv, 1, copy_size, f); fclose(f); }
+            processed += sub_batch;
 
-        processed += batch;
+            if(show_progress){
+                printf("\r%c: %llu/%llu (%.0f%%)", mode_char,
+                    (unsigned long long)processed, (unsigned long long)total_keys,
+                    100.0 * processed / total_keys);
+                fflush(stdout);
+            }
 
-        if(show_progress){
-            printf("\r%c: %llu/%llu (%.0f%%)", mode_char,
-                (unsigned long long)processed, (unsigned long long)total_keys,
-                100.0 * processed / total_keys);
-            fflush(stdout);
-        }
-
-        if(check_stop_signal()){
-            printf("\nSTOP signal received.\n");
-            break;
+            if(check_stop_signal()){
+                printf("\nSTOP signal received.\n");
+                break;
+            }
         }
     }
 
