@@ -223,9 +223,15 @@ void run_mode(char mode_char,
             double pct = 100.0 * (double)processed / (double)total_keys;
             uint64_t sec_elapsed = time(NULL) - run_start_time;
             double keys_per_sec = sec_elapsed > 0 ? (double)processed / sec_elapsed : 0;
-            fprintf(stderr, "\r%c: %.2f%% | %llu/%llu keys | %.2f Mkeys/s",
+            time_t now = time(NULL);
+            int elapsed = (int)(now - run_start_time);
+            int eta = (int)((total_keys - processed) / (keys_per_sec > 0 ? keys_per_sec : 1));
+            int eta_h = eta / 3600, eta_m = (eta / 60) % 60, eta_s = eta % 60;
+            fprintf(stderr, "\r%c: %.4f%% | %llu/Mkeys | %3d:%02d elapsed | ETA %3d:%02d:%02d | %.1f M/s",
                 mode_char, pct,
-                (unsigned long long)processed, (unsigned long long)total_keys,
+                (unsigned long long)(processed / 1000000),
+                elapsed/60, elapsed%60,
+                eta_h, eta_m, eta_s,
                 keys_per_sec / 1e6);
             fflush(stderr);
         }
