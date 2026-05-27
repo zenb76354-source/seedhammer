@@ -311,8 +311,7 @@ int main(int argc, char *argv[]){
     uint32_t seed_start = 0;
     uint32_t seed_end   = 0xFFFFFFFF;
     const char *output_path = "keys.bin";
-    time_t run_start_time = 0;
-int show_progress = 0;
+    int show_progress = 0;
 
     for(int i = 2; i < argc; i++){
         if(!strcmp(argv[i],"--ts-start") && i+1 < argc) ts_start = strtoull(argv[++i],NULL,10);
