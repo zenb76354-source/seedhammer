@@ -2,15 +2,12 @@ CUDA_HOME ?= /usr/local/cuda
 CC = $(CUDA_HOME)/bin/nvcc
 CFLAGS = -O3 -arch=native -std=c++17 -lineinfo -Xcompiler -fopenmp
 TARGET = seedhammer
-OBJS = main.o hypothesis_gpu.o
+OBJS = main.o
 
 all: $(TARGET)
 
 main.o: main.cu hypothesis_gpu.cu
 	$(CC) $(CFLAGS) -c main.cu -o main.o
-
-hypothesis_gpu.o: hypothesis_gpu.cu
-	$(CC) $(CFLAGS) -c hypothesis_gpu.cu -o hypothesis_gpu.o
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) -lssl -lcrypto -lpthread
