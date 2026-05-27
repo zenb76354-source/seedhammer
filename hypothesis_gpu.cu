@@ -131,7 +131,7 @@ __device__ void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
 // before feeding into SHA256.
 // Without this variant, those keys are completely invisible.
 
-__device__ __device__ void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+__device__ void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
     uint32_t z1_raw=(ent^seed)*0xDEADu+0xDEADu;
     uint32_t z2_raw=(ent^seed)*0xBEEFu+0xBEEFu;
@@ -190,7 +190,7 @@ __device__ void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
 // different byte-order handling in their JS engines (Safari 5,
 // IE8 on Windows XP)
 
-__device__ __device__ void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+__device__ void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
     uint8_t pool[256];
     uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     uint32_t z1=(seed)*0xDEADu+0xDEADu;
