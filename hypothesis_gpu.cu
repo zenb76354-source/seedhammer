@@ -29,9 +29,9 @@
 
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
-#define __device__
+// __device__ defined by CUDA
 #else
-#define __device__ static
+static
 #endif
 
 // ================================================================
@@ -131,7 +131,7 @@ __device__ void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
 // before feeding into SHA256.
 // Without this variant, those keys are completely invisible.
 
-__device__ void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+__device__ __device__ void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
     uint32_t z1_raw=(ent^seed)*0xDEADu+0xDEADu;
     uint32_t z2_raw=(ent^seed)*0xBEEFu+0xBEEFu;
@@ -190,7 +190,7 @@ __device__ void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
 // different byte-order handling in their JS engines (Safari 5,
 // IE8 on Windows XP)
 
-__device__ void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+__device__ __device__ void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
     uint8_t pool[256];
     uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     uint32_t z1=(seed)*0xDEADu+0xDEADu;
@@ -945,7 +945,7 @@ __device__ uint32_t mode_nonce_crosschain(
 // On STOP signal: save checkpoint and exit.
 
 
-static const char MODE_LABELS[NUM_MODES][8] = {
+static const char MODE_LABELS[][8] = {
     "H", "M", "R", "C", "J", "W", "B", "A", "D", "E",
     "L", "S", "T", "F", "G", "Q", "Y", "M2", "R2", "CQ",
     "LC", "RS", "Z", "K", "X"
@@ -960,10 +960,25 @@ __device__ void save_auto_checkpoint(uint32_t mode_idx, uint64_t key_offset, con
 // Base58 (mini-keys)
 static const char B58[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 static const int B58_REV[128] = {
-  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-  -1, 0, 1, 2, 3, 4, 5, 6, 7, 8,-1,-1,-1,-1,-1,-1,-1, 9,10,11,12,13,14,15,16,-1,17,18,19,20,21,-1,
-  22,23,24,25,26,27,28,29,30,31,32,-1,-1,-1,-1,-1,-1,33,34,35,36,37,38,39,40,41,42,43,-1,44,45,46,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1, 0, 1, 2, 3, 4, 5, 6, 7, 8,-1,-1,-1,-1,-1,-1,
+  -1, 9,10,11,12,13,14,15,16,-1,17,18,19,20,21,-1,
+  22,23,24,25,26,27,28,29,30,31,32,-1,-1,-1,-1,-1,
+  -1,33,34,35,36,37,38,39,40,41,42,43,-1,44,45,46,
   47,48,49,50,51,52,53,54,55,56,57,-1,-1,-1,-1,-1
 };
+
+__device__ void mode_core_v3_stack(uint64_t ts, uint32_t pid, int pattern_id, uint8_t priv[32]){
+    uint8_t stack[32];
+    int pos = 0;
+    // Fill with pattern (simulating uninitialized stack residuals)
+    for(int i=0; i<8; i++){
+        stack[pos++] = (uint8_t)(pattern_id + i);
+        stack[pos++] = (uint8_t)((ts >> (i*8)) & 0xFF);
+        stack[pos++] = (uint8_t)((pid >> (i*2)) & 0xFF);
+        stack[pos++] = (uint8_t)(ts & 0xFF);
+    }
+    sha256(stack, 32, priv);
+}
