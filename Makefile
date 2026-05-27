@@ -15,3 +15,4 @@ clean:
 	rm -f $(TARGET) *.o *.bin
 
 .PHONY: all clean
+

