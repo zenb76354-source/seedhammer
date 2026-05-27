@@ -162,7 +162,7 @@ void run_mode(char mode_char,
     uint32_t seed_start, uint32_t seed_end,
     const char *output_path, int show_progress)
 {
-    uint32_t seed_range = seed_end - seed_start + 1;
+    uint64_t seed_range = (uint64_t)(seed_end - seed_start) + 1;
     uint64_t ts_range = ts_end - ts_start + 1;
     uint64_t total_keys = ts_range * (uint64_t)seed_range;
     uint64_t processed = 0;
