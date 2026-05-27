@@ -47,7 +47,7 @@ int load_checkpoint(char *mode_str, uint64_t *offset){
 // GPU kernel: generate keys for one mode
 __global__ void gen_keys_kernel(char mode_char,
     uint64_t base_ts, uint32_t base_seed,
-    uint32_t seed_range,
+    uint64_t seed_range,
     uint8_t *d_out, uint64_t batch_keys)
 {
     uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
