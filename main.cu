@@ -222,19 +222,21 @@ void run_mode(char mode_char,
 }
 
 void run_autocycle(void){
-    printf("SeedHammer auto-cycle: %zu modes, %llu keys/batch\n",
-           NUM_MODES, (unsigned long long)KEYS_PER_BATCH);
+    printf("SeedHammer auto-cycle: %zu modes over full 2009-2012 range\n",
+           NUM_MODES);
+    printf("Each mode runs L1-L4 via the kernel variant logic.\n");
+    printf("Expected keys per mode: %llu (4 years * seeds)\n",
+           (unsigned long long)((uint64_t)0x100000000ULL * 1461ULL));
 
     int start_mode = 0;
-    uint64_t start_offset = 0;
+    uint64_t dummy_offset = 0;
     char saved_mode[8] = {0};
 
-    if(load_checkpoint(saved_mode, &start_offset)){
+    if(load_checkpoint(saved_mode, &dummy_offset)){
         for(size_t i = 0; i < NUM_MODES; i++){
             if(strcmp(saved_mode, MODES[i]) == 0){
                 start_mode = (int)i;
-                printf("Resuming from mode %s at offset %lu\n",
-                       MODES[i], (unsigned long)start_offset);
+                printf("Resuming from mode %s\n", MODES[i]);
                 break;
             }
         }
@@ -243,45 +245,31 @@ void run_autocycle(void){
     uint64_t ts_start = 1230768000; // Jan 1, 2009
     uint64_t ts_end   = 1356998400; // Dec 31, 2012
 
-    // Total time range: ts_start to ts_end
-    // Each cycle advances ts by 1 day (86400 seconds)
-    uint64_t max_cycles = (ts_end - ts_start) / 86400;
-
-    for(uint64_t cycle = 0; cycle <= max_cycles; cycle++){
-        uint64_t cycle_ts = ts_start + cycle * 86400;
-        if(cycle_ts > ts_end) break;
-
-        for(int m = start_mode; m < (int)NUM_MODES; m++){
-            if(check_stop_signal()){
-                printf("\nSTOP signal received. Halting.\n");
-                return;
-            }
-
-            printf("\n[Cycle %llu/%llu] Mode %s ts=%llu...\n",
-                   (unsigned long long)(cycle+1),
-                   (unsigned long long)max_cycles,
-                   MODES[m], (unsigned long long)cycle_ts);
-            fflush(stdout);
-
-            char output_path[64];
-            snprintf(output_path, sizeof(output_path), "keys_%s.bin", MODES[m]);
-
-            run_mode(MODES[m][0],
-                     cycle_ts,
-                     cycle_ts + 86399,  // 1 day range
-                     0, 0xFFFFFFFF,
-                     output_path, 1);
-
-            save_checkpoint(m, 0);
+    for(int m = start_mode; m < (int)NUM_MODES; m++){
+        if(check_stop_signal()){
+            printf("\nSTOP signal received. Halting.\n");
+            return;
         }
-        start_mode = 0;
-        printf("\n[Cycle %llu complete] %llu modes done, %llu keys total.\n",
-               (unsigned long long)(cycle+1),
-               (unsigned long long)NUM_MODES,
-               (unsigned long long)(NUM_MODES * 86400ULL * 0x100000000ULL));
+
+        printf("\n[%d/%zu] Mode %s (ts=%llu..%llu, seeds=0..0xFFFFFFFF)...\n",
+               m+1, NUM_MODES, MODES[m],
+               (unsigned long long)ts_start, (unsigned long long)ts_end);
+        fflush(stdout);
+
+        char output_path[64];
+        snprintf(output_path, sizeof(output_path), "keys_%s.bin", MODES[m]);
+
+        run_mode(MODES[m][0],
+                 ts_start, ts_end,
+                 0, 0xFFFFFFFF,
+                 output_path, 0);
+
+        save_checkpoint(m, 0);
     }
-    printf("\nAll cycles complete. Visited %llu timestamps across %zu modes.\n",
-           (unsigned long long)max_cycles, NUM_MODES);
+
+    printf("\n=== All %zu modes complete ===\n", NUM_MODES);
+    printf("Total keys generated: ~%llu\n",
+           (unsigned long long)(NUM_MODES * ((uint64_t)0x100000000ULL * 1461ULL)));
 }
 
 int main(int argc, char *argv[]){
