@@ -23,6 +23,8 @@ static const char *MODES[] = {
 #define BLOCKS 8192
 #define KEYS_PER_KERNEL ((uint64_t)THREADS * (uint64_t)BLOCKS)
 
+time_t run_start_time = 0;
+
 int check_stop_signal(void){
     FILE *f = fopen(STOP_FLAG_FILE, "r");
     if(f){ fclose(f); return 1; }
