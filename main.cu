@@ -170,9 +170,9 @@ void run_mode(char mode_char,
     cudaSetDevice(gpu_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, gpu_id);
-    printf("GPU: %s, total keys: %llu (ts_range=%llu, seed_range=%u)\n",
+    printf("GPU: %s, total keys: %llu (ts_range=%llu, seed_range=%llu)\n",
            prop.name, (unsigned long long)total_keys,
-           (unsigned long long)ts_range, seed_range);
+           (unsigned long long)ts_range, (unsigned long long)seed_range);
 
     // Allocate device buffer
     size_t buf_size = (size_t)KEYS_PER_BATCH * 32;
