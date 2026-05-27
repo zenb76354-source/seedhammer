@@ -166,6 +166,7 @@ void run_mode(char mode_char,
     uint64_t ts_range = ts_end - ts_start + 1;
     uint64_t total_keys = ts_range * (uint64_t)seed_range;
     uint64_t processed = 0;
+    if(run_start_time == 0) run_start_time = time(NULL);
     int gpu_id = 0;
     cudaSetDevice(gpu_id);
     cudaDeviceProp prop;
@@ -217,10 +218,14 @@ void run_mode(char mode_char,
         processed += sub_batch;
 
         if(show_progress || (processed & 0xFFFFFFF) == 0){
-            printf("\r%c: %llu/%llu (%.0f%%)", mode_char,
+            double pct = 100.0 * (double)processed / (double)total_keys;
+            uint64_t sec_elapsed = time(NULL) - run_start_time;
+            double keys_per_sec = sec_elapsed > 0 ? (double)processed / sec_elapsed : 0;
+            fprintf(stderr, "\r%c: %.2f%% | %llu/%llu keys | %.2f Mkeys/s",
+                mode_char, pct,
                 (unsigned long long)processed, (unsigned long long)total_keys,
-                100.0 * processed / total_keys);
-            fflush(stdout);
+                keys_per_sec / 1e6);
+            fflush(stderr);
         }
 
         if(check_stop_signal()){
@@ -306,7 +311,8 @@ int main(int argc, char *argv[]){
     uint32_t seed_start = 0;
     uint32_t seed_end   = 0xFFFFFFFF;
     const char *output_path = "keys.bin";
-    int show_progress = 0;
+    time_t run_start_time = 0;
+int show_progress = 0;
 
     for(int i = 2; i < argc; i++){
         if(!strcmp(argv[i],"--ts-start") && i+1 < argc) ts_start = strtoull(argv[++i],NULL,10);
