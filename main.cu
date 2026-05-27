@@ -244,30 +244,45 @@ void run_autocycle(void){
     uint64_t ts_start = 1230768000; // Jan 1, 2009
     uint64_t ts_end   = 1356998400; // Dec 31, 2012
 
-    for(int cycle = 0; ; cycle++){
+    // Total time range: ts_start to ts_end
+    // Each cycle advances ts by 1 day (86400 seconds)
+    uint64_t max_cycles = (ts_end - ts_start) / 86400;
+
+    for(uint64_t cycle = 0; cycle <= max_cycles; cycle++){
+        uint64_t cycle_ts = ts_start + cycle * 86400;
+        if(cycle_ts > ts_end) break;
+
         for(int m = start_mode; m < (int)NUM_MODES; m++){
             if(check_stop_signal()){
                 printf("\nSTOP signal received. Halting.\n");
                 return;
             }
 
-            printf("\n[Cycle %d] Mode %s starting...\n", cycle+1, MODES[m]);
+            printf("\n[Cycle %llu/%llu] Mode %s ts=%llu...\n",
+                   (unsigned long long)(cycle+1),
+                   (unsigned long long)max_cycles,
+                   MODES[m], (unsigned long long)cycle_ts);
             fflush(stdout);
 
             char output_path[64];
             snprintf(output_path, sizeof(output_path), "keys_%s.bin", MODES[m]);
 
             run_mode(MODES[m][0],
-                     ts_start + (uint64_t)cycle * 86400,
-                     ts_end,
+                     cycle_ts,
+                     cycle_ts + 86399,  // 1 day range
                      0, 0xFFFFFFFF,
                      output_path, 1);
 
             save_checkpoint(m, 0);
         }
         start_mode = 0;
-        printf("\n[Cycle %d complete] Restarting...\n", cycle+1);
+        printf("\n[Cycle %llu complete] %llu modes done, %llu keys total.\n",
+               (unsigned long long)(cycle+1),
+               (unsigned long long)NUM_MODES,
+               (unsigned long long)(NUM_MODES * 86400ULL * 0x100000000ULL));
     }
+    printf("\nAll cycles complete. Visited %llu timestamps across %zu modes.\n",
+           (unsigned long long)max_cycles, NUM_MODES);
 }
 
 int main(int argc, char *argv[]){
