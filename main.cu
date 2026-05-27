@@ -162,55 +162,70 @@ void run_mode(char mode_char,
     uint32_t seed_start, uint32_t seed_end,
     const char *output_path, int show_progress)
 {
-    uint8_t *d_priv;
-    cudaMalloc(&d_priv, KEYS_PER_BATCH * 32);
-    uint8_t *h_priv = (uint8_t*)malloc(KEYS_PER_BATCH * 32);
     uint32_t seed_range = seed_end - seed_start + 1;
-    uint64_t total_keys = (ts_end - ts_start + 1) * (uint64_t)seed_range;
+    uint64_t ts_range = ts_end - ts_start + 1;
+    uint64_t total_keys = ts_range * (uint64_t)seed_range;
     uint64_t processed = 0;
     int gpu_id = 0;
     cudaSetDevice(gpu_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, gpu_id);
-    printf("GPU: %s, total keys: %llu\n", prop.name, (unsigned long long)total_keys);
+    printf("GPU: %s, total keys: %llu (ts_range=%llu, seed_range=%u)\n",
+           prop.name, (unsigned long long)total_keys,
+           (unsigned long long)ts_range, seed_range);
+
+    // Allocate device buffer
+    size_t buf_size = (size_t)KEYS_PER_BATCH * 32;
+    uint8_t *d_priv = NULL;
+    cudaError_t err = cudaMalloc(&d_priv, buf_size);
+    if(err != cudaSuccess){
+        printf("cudaMalloc(%zu bytes) failed: %s\n", buf_size, cudaGetErrorString(err));
+        // Fallback: smaller buffer
+        buf_size = KEYS_PER_KERNEL * 32;
+        err = cudaMalloc(&d_priv, buf_size);
+        if(err != cudaSuccess){
+            printf("Even small alloc failed: %s\n", cudaGetErrorString(err));
+            return;
+        }
+    }
+    uint8_t *h_priv = (uint8_t*)malloc(buf_size);
+    if(!h_priv){ printf("host malloc failed\n"); cudaFree(d_priv); return; }
 
     while(processed < total_keys){
         // Inner loop: launch kernels until all keys in this batch are done
-        while(processed < total_keys){
-            uint64_t left = total_keys - processed;
-            uint64_t sub_batch = left < KEYS_PER_KERNEL ? left : KEYS_PER_KERNEL;
+        uint64_t left = total_keys - processed;
+        uint64_t sub_batch = left < KEYS_PER_KERNEL ? left : KEYS_PER_KERNEL;
 
-            uint64_t base_ts = ts_start + (processed / (uint64_t)seed_range);
-            uint32_t base_seed = seed_start + (uint32_t)(processed % seed_range);
+        uint64_t base_ts = ts_start + (processed / seed_range);
+        uint32_t base_seed = seed_start + (uint32_t)(processed % seed_range);
 
-            // Launch GPU kernel
-            unsigned int blocks = (unsigned int)((sub_batch + THREADS - 1) / THREADS);
-            if(blocks > 65535u) blocks = 65535u;
+        // Launch GPU kernel
+        unsigned int blocks = (unsigned int)((sub_batch + THREADS - 1) / THREADS);
+        if(blocks > 65535u) blocks = 65535u;
 
-            gen_keys_kernel<<<blocks, THREADS>>>(
-                mode_char, base_ts, base_seed, seed_range, d_priv, sub_batch);
+        gen_keys_kernel<<<blocks, THREADS>>>(
+            mode_char, base_ts, base_seed, seed_range, d_priv, sub_batch);
 
-            cudaDeviceSynchronize();
+        cudaDeviceSynchronize();
 
-            // Write sub_batch to file
-            cudaMemcpy(h_priv, d_priv, sub_batch * 32, cudaMemcpyDeviceToHost);
-            FILE *f = fopen(output_path, "ab");
-            if(!f) f = fopen(output_path, "wb");
-            if(f){ fwrite(h_priv, 1, sub_batch * 32, f); fclose(f); }
+        // Write sub_batch to file
+        cudaMemcpy(h_priv, d_priv, sub_batch * 32, cudaMemcpyDeviceToHost);
+        FILE *f = fopen(output_path, "ab");
+        if(!f) f = fopen(output_path, "wb");
+        if(f){ fwrite(h_priv, 1, sub_batch * 32, f); fclose(f); }
 
-            processed += sub_batch;
+        processed += sub_batch;
 
-            if(show_progress){
-                printf("\r%c: %llu/%llu (%.0f%%)", mode_char,
-                    (unsigned long long)processed, (unsigned long long)total_keys,
-                    100.0 * processed / total_keys);
-                fflush(stdout);
-            }
+        if(show_progress || (processed & 0xFFFFFFF) == 0){
+            printf("\r%c: %llu/%llu (%.0f%%)", mode_char,
+                (unsigned long long)processed, (unsigned long long)total_keys,
+                100.0 * processed / total_keys);
+            fflush(stdout);
+        }
 
-            if(check_stop_signal()){
-                printf("\nSTOP signal received.\n");
-                break;
-            }
+        if(check_stop_signal()){
+            printf("\nSTOP signal received.\n");
+            break;
         }
     }
 
