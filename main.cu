@@ -6,7 +6,7 @@
 #include <time.h>
 #include <cuda_runtime.h>
 
-#define THREADS 256
+#define THREADS 512
 
 #include "hypothesis_gpu.cu"
 #include "ec_jacobian.h"
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     uint64_t ts_range = ts_end - ts_start + 1;
     uint64_t total_keys = ts_range * seed_range;
 
-    if(batch_size == 0) batch_size = 1 * 1024 * 1024;
+    if(batch_size == 0) batch_size = 32 * 1024 * 1024; // Large batch for B200
     const uint64_t BATCH = batch_size;
     uint8_t *d_found_key;
     unsigned long long *d_found_count;
