@@ -8,6 +8,8 @@
 #include <cuda_runtime.h>
 #include <sys/stat.h>
 
+#define THREADS 256
+
 // Hypotheses generator functions
 #include "hypothesis_gpu.cu"
 
@@ -17,6 +19,20 @@
 
 // Integrated scan kernel (EC multiply + SHA256 + RIPEMD160 + bloom check)
 #include "scan_kernel.cu"
+
+__global__ void gen_keys_kernel(char mode, uint64_t base_ts, uint32_t base_seed, uint64_t seed_range, uint8_t *out, uint64_t n) {
+    uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
+    if(idx >= n) return;
+    uint64_t ts = base_ts + (idx / seed_range);
+    uint32_t seed = base_seed + (uint32_t)(idx % seed_range);
+    uint8_t priv[32];
+    if(mode == 'H') mode_h36(ts, priv);
+    else if(mode == 'M') mode_mwc_v8(ts, seed, priv);
+    else if(mode == 'R') mode_randstorm(ts, seed, priv);
+    else if(mode == 'J') mode_instawallet(ts, seed, priv);
+    else mode_h36(ts, priv);
+    for(int i=0;i<32;i++) out[idx*32+i] = priv[i];
+}
 
 static const char *MODES[] = {
     "H","M","R","C","J","W","B","A","D","E",
@@ -52,9 +68,6 @@ int main(int argc, char **argv) {
     if(scan_mode) {
         printf("SeedHammer-Scan (Standalone) mode %c: ts=%lu..%lu\n", mode_char, ts_start, ts_end);
         
-        // Load targets from targets.h (Hardcoded for now as example targets)
-        // In a real scenario, we'd include the 21k targets here.
-        // For now, we use the ones from vaultwatch/targets.h
         uint32_t n_patoshi = 8;
         uint8_t patoshi_h160s[8*20] = {
             0x14,0x4d,0xe4,0x97,0x1a,0x30,0x9f,0x65,0x6a,0x25,0x98,0xf9,0x74,0x63,0xe2,0x1f,0xc4,0xe6,0x0f,0xe1,
@@ -67,7 +80,6 @@ int main(int argc, char **argv) {
             0x59,0x2f,0xc3,0x99,0x00,0x26,0x33,0x4c,0x8c,0x6f,0xb2,0xb9,0xda,0x45,0x71,0x79,0xcd,0xb5,0xc6,0x88
         };
 
-        // Simple Bloom filter (all bits 1 for safety since we have few targets)
         uint32_t bloom_bits = 1 << 18;
         uint8_t *bloom_data = (uint8_t*)malloc(bloom_bits/8);
         memset(bloom_data, 0xFF, bloom_bits/8); 
@@ -131,7 +143,7 @@ int main(int argc, char **argv) {
                     fprintf(f, "\n");
                     fclose(f);
                 }
-                exit(0); // Instant stop
+                exit(0); 
             }
 
             processed += this_batch;
