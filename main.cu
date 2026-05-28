@@ -1,101 +1,190 @@
-// SeedHammer main.cu — SUPER SCAN MODE (B200 Optimized)
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <time.h>
+// engine/main.cu — GPU generation + verification integrated
+// seedhammer (hypothesis_gpu.cu) × vaultwatch (ec_jacobian.h, math256.h, targets.h)
+// × scan_kernel.cu (warp-parallel SHA+RIPEMD+bloom+differential addition)
+// No pipes, no files, no host copy of keys — everything on GPU.
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <ctime>
 #include <cuda_runtime.h>
 
 #define THREADS 256
 
 #include "hypothesis_gpu.cu"
-#include "ec_jacobian.h"
 #include "math256.h"
+#include "ec_jacobian.h"
+
+#include "targets.h"
 #include "scan_kernel.cu"
 
-uint64_t batch_size = 0;
+// ==================== HOST-SIDE BLOOM (7 XOR hashes) ====================
+static void build_bloom(uint8_t *bloom_data, uint32_t bloom_bits,
+                         const uint8_t *targets, uint32_t n_targets) {
+    uint32_t mask = bloom_bits - 1;
+    for (uint32_t i = 0; i < n_targets; i++) {
+        const uint8_t *h = targets + i * 20;
+        uint32_t h7[7] = {
+            ((uint32_t)h[0]<<24|h[1]<<16|h[2]<<8|h[3]) & mask,
+            ((uint32_t)h[4]<<24|h[5]<<16|h[6]<<8|h[7]) & mask,
+            ((uint32_t)h[8]<<24|h[9]<<16|h[10]<<8|h[11]) & mask,
+            ((uint32_t)h[12]<<24|h[13]<<16|h[14]<<8|h[15]) & mask,
+            ((uint32_t)h[16]<<24|h[17]<<16|h[18]<<8|h[19]) & mask,
+            ((uint32_t)(h[0]^h[10])<<24|(h[1]^h[11])<<16|(h[2]^h[12])<<8|(h[3]^h[13])) & mask,
+            ((uint32_t)(h[4]^h[14])<<24|(h[5]^h[15])<<16|(h[6]^h[16])<<8|(h[7]^h[17])) & mask
+        };
+        for (int j = 0; j < 7; j++)
+            bloom_data[h7[j] >> 3] |= (1 << (h7[j] & 7));
+    }
+}
 
+// ==================== CUDA ERROR CHECK ====================
+#define CUDA_ERR(x) do { \
+    cudaError_t e = (x); \
+    if (e != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(e)); \
+        exit(1); \
+    } \
+} while(0)
+
+// ==================== MAIN ====================
 int main(int argc, char **argv) {
-    if(argc < 2) return 1;
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <mode> [--ts-start N] [--ts-end N] [--seed-start N] [--seed-end N] [--progress]\n", argv[0]);
+        return 1;
+    }
+
     char mode_char = argv[1][0];
     uint64_t ts_start = 0, ts_end = 0;
     uint32_t seed_start = 0, seed_end = UINT32_MAX;
     int show_progress = 0;
 
-    for(int i=2; i<argc; i++) {
-        if(!strcmp(argv[i],"--ts-start") && i+1 < argc) ts_start = strtoull(argv[++i],NULL,10);
-        else if(!strcmp(argv[i],"--ts-end") && i+1 < argc) ts_end = strtoull(argv[++i],NULL,10);
-        else if(!strcmp(argv[i],"--seed-start") && i+1 < argc) seed_start = (uint32_t)strtoul(argv[++i],NULL,10);
-        else if(!strcmp(argv[i],"--seed-end") && i+1 < argc) seed_end = (uint32_t)strtoul(argv[++i],NULL,10);
-        else if(!strcmp(argv[i],"--progress")) show_progress = 1;
-        else if(!strcmp(argv[i],"--batch") && i+1 < argc) batch_size = strtoull(argv[++i],NULL,10);
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--ts-start") && i+1 < argc) ts_start = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--ts-end") && i+1 < argc) ts_end = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--seed-start") && i+1 < argc) seed_start = (uint32_t)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--seed-end") && i+1 < argc) seed_end = (uint32_t)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--progress")) show_progress = 1;
     }
 
-    printf("SeedHammer-SUPER-SCAN mode %c: ts=%lu..%lu\n", mode_char, ts_start, ts_end);
-    
-    uint32_t n_patoshi = 8;
-    uint8_t patoshi_h160s[8*20] = {
-        0x14,0x4d,0xe4,0x97,0x1a,0x30,0x9f,0x65,0x6a,0x25,0x98,0xf9,0x74,0x63,0xe2,0x1f,0xc4,0xe6,0x0f,0xe1,
-        0xb3,0x46,0xa3,0xbc,0xe0,0xe6,0xf5,0xe8,0xd0,0x1b,0x6a,0x73,0x9c,0x05,0x01,0x49,0x2d,0xd5,0xf5,0xeb,
-        0xbc,0x30,0xaf,0x9c,0xfb,0xa5,0x5e,0xa6,0x13,0x74,0xf9,0x8b,0x3e,0xf3,0x18,0x55,0x70,0xb7,0x98,0x18,
-        0x18,0xf2,0xdf,0x2f,0x55,0xe0,0xdd,0x03,0x98,0x2b,0x35,0x8b,0x5f,0xb7,0x49,0x1d,0x98,0xae,0x94,0xaf,
-        0x88,0xbb,0x33,0x3d,0x5d,0xff,0xea,0x68,0x28,0xbd,0x86,0x8e,0x3a,0xe5,0x70,0x09,0x75,0xc8,0xfa,0x4c,
-        0xe0,0xbe,0x57,0x0f,0x09,0x09,0xa4,0xee,0xdc,0x8e,0x82,0x65,0x2c,0x7f,0x39,0x10,0x38,0xf0,0x0c,0xcc,
-        0x30,0x59,0xc8,0x38,0x4e,0x7e,0xbf,0x41,0xe0,0x3c,0x0d,0xa3,0xfa,0x7e,0x69,0xfa,0xb4,0x07,0x64,0x9d,
-        0x59,0x2f,0xc3,0x99,0x00,0x26,0x33,0x4c,0x8c,0x6f,0xb2,0xb9,0xda,0x45,0x71,0x79,0xcd,0xb5,0xc6,0x88
-    };
+    if (ts_start == 0 && ts_end == 0 && seed_start == 0 && seed_end == UINT32_MAX) {
+        fprintf(stderr, "ERROR: specify --ts-start/--ts-end or --seed range\n");
+        return 1;
+    }
 
-    uint32_t bloom_bits = 1 << 18;
-    uint8_t *bloom_data = (uint8_t*)calloc(1, bloom_bits/8);
-    memset(bloom_data, 0xFF, bloom_bits/8);
+    fprintf(stderr, "Engine: mode=%c ts=%lu..%lu seed=%u..%u\n",
+            mode_char, ts_start, ts_end, seed_start, seed_end);
 
-    cudaSetDevice(0);
-    uint64_t seed_range = (uint64_t)(seed_end - seed_start) + 1;
-    uint64_t ts_range = ts_end - ts_start + 1;
-    uint64_t total_keys = ts_range * seed_range;
+    // ==================== LOAD TARGETS from targets.h ====================
+    uint32_t n_targets = NUM_TARGETS;  // 51 (from targets.h)
+    const uint8_t *targets = (const uint8_t*)TARGET_H160;  // [51][20] hardcoded array
+    fprintf(stderr, "Loaded %u targets from targets.h\n", n_targets);
 
-    if(batch_size == 0) batch_size = 1 * 1024 * 1024;
-    const uint64_t BATCH = batch_size;
-    uint8_t *d_found_key;
-    unsigned long long *d_found_count;
-    cudaMalloc(&d_found_key, 256 * 52);
-    cudaMalloc(&d_found_count, 8);
+    // ==================== BUILD BLOOM FILTER ====================
+    uint32_t bloom_bits = 1 << 21;  // 2,097,152 bits = 262144 bytes
+    uint8_t *bloom_data = (uint8_t*)calloc(1, bloom_bits / 8);
+    if (!bloom_data) { fprintf(stderr, "ERROR: calloc(%u) failed\n", bloom_bits/8); return 1; }
+    build_bloom(bloom_data, bloom_bits, targets, n_targets);
 
+    // ==================== GPU INIT ====================
+    int gpu_id = 0;
+    CUDA_ERR(cudaSetDevice(gpu_id));
+    cudaDeviceProp prop;
+    CUDA_ERR(cudaGetDeviceProperties(&prop, gpu_id));
+    fprintf(stderr, "GPU: %s (SMs=%d, VRAM=%zu MB)\n",
+            prop.name, prop.multiProcessorCount, prop.totalGlobalMem >> 20);
+
+    // ==================== UPLOAD TO GPU ====================
     uint32_t h_bloom_bits = bloom_bits;
-    cudaMemcpyToSymbol(BLOOM_BITS, &h_bloom_bits, sizeof(uint32_t));
-    cudaMemcpyToSymbol(BLOOM_DATA, bloom_data, bloom_bits/8);
-    cudaMemcpyToSymbol(N_PATOSHI, &n_patoshi, sizeof(uint32_t));
-    cudaMemcpyToSymbol(PATOSHI_H160S, patoshi_h160s, n_patoshi * 20);
+    CUDA_ERR(cudaMemcpyToSymbol(DEV_BLOOM_BITS, &h_bloom_bits, sizeof(uint32_t)));
+    CUDA_ERR(cudaMemcpyToSymbol(DEV_BLOOM_DATA, bloom_data, bloom_bits / 8));
+    CUDA_ERR(cudaMemcpyToSymbol(DEV_N_TARGETS, &n_targets, sizeof(uint32_t)));
+    CUDA_ERR(cudaMemcpyToSymbol(DEV_TARGETS, targets, n_targets * 20));
+    CUDA_ERR(cudaDeviceSynchronize());
+    fprintf(stderr, "Uploaded %u targets + %u KB bloom to __constant__ memory\n",
+            n_targets, bloom_bits / 8 / 1024);
 
+    // ==================== GPU OUTPUT BUFFERS ====================
+    uint8_t *d_found_key;
+    uint64_t *d_found_count;
+    CUDA_ERR(cudaMalloc(&d_found_key, 256 * 52));
+    CUDA_ERR(cudaMalloc(&d_found_count, sizeof(uint64_t)));
+
+    // ==================== LOOP PARAMS ====================
+    uint64_t seed_range = (uint64_t)(seed_end - seed_start) + 1;
+    uint64_t ts_range = (ts_start > 0 && ts_end > 0) ? (ts_end - ts_start + 1) : 1;
+    uint64_t total_keys = ts_range * seed_range;
     uint64_t processed = 0;
-    time_t start = time(NULL);
+    time_t start_time = time(NULL);
+    uint32_t keys_per_kernel = THREADS * 1024;  // 256K keys per batch
+    // Note: super_scan_kernel generates 16 keys per thread via differential addition
+    // So actual keys checked per launch = keys_per_kernel * 16
 
-    while(processed < total_keys) {
-        uint64_t this_batch = (total_keys - processed) < BATCH ? (total_keys - processed) : BATCH;
+    fprintf(stderr, "Total keys: %lu | batch: %u keys/kernel\n", total_keys, keys_per_kernel);
+
+    // ==================== MAIN LOOP ====================
+    while (processed < total_keys) {
+        uint64_t remaining = total_keys - processed;
+        uint64_t this_batch = (remaining < keys_per_kernel) ? remaining : keys_per_kernel;
+
         uint64_t base_ts = ts_start + (processed / seed_range);
         uint32_t base_seed = seed_start + (uint32_t)(processed % seed_range);
 
-        unsigned int blk = (unsigned int)((this_batch + THREADS - 1) / THREADS);
-        unsigned long long zero = 0;
-        cudaMemcpy(d_found_count, &zero, 8, cudaMemcpyHostToDevice);
-        
-        super_scan_kernel<<<blk, THREADS>>>(mode_char, base_ts, base_seed, seed_range, this_batch, d_found_count, d_found_key);
-        cudaDeviceSynchronize();
+        // Reset found counter
+        CUDA_ERR(cudaMemset(d_found_count, 0, sizeof(uint64_t)));
 
-        unsigned long long found_this;
-        cudaMemcpy(&found_this, d_found_count, 8, cudaMemcpyDeviceToHost);
-        if(found_this > 0) {
-            uint8_t found_data[52];
-            cudaMemcpy(found_data, d_found_key, 52, cudaMemcpyDeviceToHost);
-            printf("\n*** FOUND! ***\n"); exit(0);
+        // Launch kernel (16 keys per thread via differential addition)
+        uint32_t grid = (uint32_t)((this_batch + THREADS - 1) / THREADS);
+        super_scan_kernel<<<grid, THREADS>>>(
+            mode_char, base_ts, base_seed, seed_range,
+            this_batch, d_found_count, d_found_key
+        );
+
+        CUDA_ERR(cudaDeviceSynchronize());
+
+        // Check for found keys
+        uint64_t found_this = 0;
+        CUDA_ERR(cudaMemcpy(&found_this, d_found_count, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+        if (found_this > 0) {
+            uint64_t to_read = (found_this < 256) ? found_this : 256;
+            uint8_t found_data[256 * 52];
+            CUDA_ERR(cudaMemcpy(found_data, d_found_key, to_read * 52, cudaMemcpyDeviceToHost));
+
+            for (uint64_t fi = 0; fi < to_read; fi++) {
+                uint8_t *key = found_data + fi * 52;
+                printf("FOUND\t");
+                for (int i = 0; i < 32; i++) printf("%02x", key[i]);
+                printf("\t");
+                for (int i = 32; i < 52; i++) printf("%02x", key[i]);
+                printf("\n");
+
+                FILE *ff = fopen("found.txt", "a");
+                if (ff) {
+                    fprintf(ff, "FOUND priv=");
+                    for (int i = 0; i < 32; i++) fprintf(ff, "%02x", key[i]);
+                    fprintf(ff, " h160=");
+                    for (int i = 32; i < 52; i++) fprintf(ff, "%02x", key[i]);
+                    fprintf(ff, "\n");
+                    fclose(ff);
+                }
+            }
+            fprintf(stderr, "\n[!] FOUND %lu key(s) — check found.txt\n", found_this);
         }
 
         processed += this_batch;
-        if(show_progress || (processed & 0xFFFFF) == 0) {
+
+        // Progress
+        if (show_progress) {
             double pct = 100.0 * (double)processed / (double)total_keys;
-            double kps = (double)processed / (time(NULL) - start + 1);
-            fprintf(stderr, "\r%c: %.2f%% | %llu Mkeys | %.1f M/s", mode_char, pct, (unsigned long long)(processed/1000000), kps/1000000.0);
+            double elapsed = (double)(time(NULL) - start_time);
+            double kps = (double)processed / (elapsed > 0 ? elapsed : 1.0);
+            fprintf(stderr, "\r%c: %.4f%% | %lu Mkeys | %.1f M/s",
+                    mode_char, pct, (unsigned long)(processed / 1000000), kps / 1000000.0);
         }
     }
+
+    fprintf(stderr, "\nDone. Processed %lu keys in %ld seconds.\n",
+            processed, time(NULL) - start_time);
     return 0;
 }
