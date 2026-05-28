@@ -6,11 +6,17 @@ OBJS = main.o
 
 all: $(TARGET)
 
-main.o: main.cu hypothesis_gpu.cu
-	$(CC) $(CFLAGS) -c main.cu -o main.o
+main.o: main.cu hypothesis_gpu.cu ec_jacobian.h math256.h
+	$(CC) $(CFLAGS) -c main.cu -o main.o -I/vaultwatch
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) -lssl -lcrypto -lpthread
+
+# Fully integrated scan target
+SCAN_TARGET = seedhammer-scan
+
+$(SCAN_TARGET): scan_kernel.cu hypothesis_gpu.cu ec_jacobian.h math256.h
+	$(CC) $(CFLAGS) scan_kernel.cu -o $(SCAN_TARGET) -I/vaultwatch
 
 # Mode-specific targets (convenience aliases)
 run-M: $(TARGET)
