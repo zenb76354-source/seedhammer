@@ -36,6 +36,7 @@ static const char *MODES[] = {
 #define KEYS_PER_KERNEL ((uint64_t)THREADS * (uint64_t)BLOCKS)
 
 time_t run_start_time = 0;
+uint64_t batch_size = 0;
 
 int check_stop_signal(void){
     FILE *f = fopen(STOP_FLAG_FILE, "r");
@@ -344,6 +345,7 @@ int main(int argc, char *argv[]){
         else if(!strcmp(argv[i],"--progress")) show_progress = 1;
         else if(!strcmp(argv[i],"--scan")) scan_mode = 1;
         else if(!strcmp(argv[i],"--targets") && i+1 < argc) targets_path = argv[++i];
+        else if(!strcmp(argv[i],"--batch") && i+1 < argc) batch_size = strtoull(argv[++i],NULL,10);
     }
 
     if(scan_mode) {
@@ -402,7 +404,8 @@ int main(int argc, char *argv[]){
         uint64_t total_keys = ts_range * seed_range;
 
         // Allocate device memory
-        const uint64_t BATCH = 16 * 1024 * 1024; // 16M keys per batch
+        if(batch_size == 0) batch_size = 16 * 1024 * 1024; // Default 16M
+        const uint64_t BATCH = batch_size;
         uint8_t *d_keys, *d_found_key;
         uint64_t *d_found_count;
         cudaMalloc(&d_keys, BATCH * 32);
