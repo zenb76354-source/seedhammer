@@ -45,7 +45,7 @@ static const uint32_t K256[64]={
 #define CH(x,y,z) ((x&y)^(~x&z))
 #define MAJ(x,y,z) ((x&y)^(x&z)^(y&z))
 
-__device__ void sha256c(uint32_t s[8],const uint32_t b[16]){
+__device__ void sha256c_hyp(uint32_t s[8],const uint32_t b[16]){
     uint32_t a=s[0],b2=s[1],c=s[2],d=s[3],e=s[4],f=s[5],g=s[6],h=s[7],w[64];
     for(int i=0;i<16;i++)w[i]=b[i];
     for(int i=16;i<64;i++)w[i]=sig1(w[i-2])+w[i-7]+sig0(w[i-15])+w[i-16];
@@ -53,15 +53,15 @@ __device__ void sha256c(uint32_t s[8],const uint32_t b[16]){
     s[0]+=a;s[1]+=b2;s[2]+=c;s[3]+=d;s[4]+=e;s[5]+=f;s[6]+=g;s[7]+=h;
 }
 
-__device__ void sha256(const uint8_t *m,uint32_t len,uint8_t *h){
+__device__ void sha256_hyp(const uint8_t *m,uint32_t len,uint8_t *h){
     uint32_t s[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
     uint32_t blk[16];uint64_t bits=(uint64_t)len*8;uint32_t idx=0;
-    while(len>=64){for(int i=0;i<16;i++){blk[i]=((uint32_t)m[idx]<<24)|((uint32_t)m[idx+1]<<16)|((uint32_t)m[idx+2]<<8)|m[idx+3];idx+=4;}sha256c(s,blk);len-=64;}
+    while(len>=64){for(int i=0;i<16;i++){blk[i]=((uint32_t)m[idx]<<24)|((uint32_t)m[idx+1]<<16)|((uint32_t)m[idx+2]<<8)|m[idx+3];idx+=4;}sha256c_hyp(s,blk);len-=64;}
     uint8_t pad[144];int pl=0;
     for(uint32_t i=0;i<len;i++)pad[pl++]=m[idx++];pad[pl++]=0x80;
     while((pl%64)!=56)pad[pl++]=0;
     for(int i=7;i>=0;i--)pad[pl++]=(bits>>(i*8))&0xFF;
-    for(uint32_t i=0;i<pl;i+=64){for(int j=0;j<16;j++){uint32_t o=i+j*4;blk[j]=((uint32_t)pad[o]<<24)|((uint32_t)pad[o+1]<<16)|((uint32_t)pad[o+2]<<8)|pad[o+3];}sha256c(s,blk);}
+    for(uint32_t i=0;i<pl;i+=64){for(int j=0;j<16;j++){uint32_t o=i+j*4;blk[j]=((uint32_t)pad[o]<<24)|((uint32_t)pad[o+1]<<16)|((uint32_t)pad[o+2]<<8)|pad[o+3];}sha256c_hyp(s,blk);}
     for(int i=0;i<8;i++){h[i*4]=(s[i]>>24)&0xFF;h[i*4+1]=(s[i]>>16)&0xFF;h[i*4+2]=(s[i]>>8)&0xFF;h[i*4+3]=s[i]&0xFF;}
 }
 
@@ -75,7 +75,7 @@ __device__ uint32_t glibc_rand(uint32_t *st){*st=(*st*1103515245u+12345u)&0x7FFF
 __device__ void mode_core_v3_stack(uint64_t ts,uint32_t pid,int pattern_id,uint8_t priv[32]){
     uint8_t stack[32];
     for(int i=0;i<8;i++){stack[i*4]=(uint8_t)(pattern_id+i);stack[i*4+1]=(uint8_t)((ts>>(i*8))&0xFF);stack[i*4+2]=(uint8_t)((pid>>(i*2))&0xFF);stack[i*4+3]=(uint8_t)(ts&0xFF);}
-    sha256(stack,32,priv);
+    sha256_hyp(stack,32,priv);
 }
 
 __device__ void mode_h36(uint64_t ts,uint8_t priv[32]){for(int i=0;i<8;i++)priv[24+i]=(ts>>(i*8))&0xFF;for(int i=0;i<24;i++)priv[i]=0;}
@@ -84,92 +84,92 @@ __device__ void mode_h36_usec(uint64_t s,uint64_t u,uint8_t p[32]){for(int i=0;i
 __device__ void mode_h36_le(uint64_t ts,uint8_t p[32]){for(int i=0;i<8;i++)p[24+i]=(ts>>(i*8))&0xFF;uint64_t tl=0;for(int i=0;i<8;i++)tl|=((ts>>(i*8))&0xFF)<<((7-i)*8);for(int i=0;i<8;i++)p[24+i]=(tl>>(i*8))&0xFF;}
 __device__ void mode_h36_sec(uint32_t us,uint8_t p[32]){for(int i=28;i<32;i++)p[i]=0;p[28]=(us>>24)&0xFF;p[29]=(us>>16)&0xFF;p[30]=(us>>8)&0xFF;p[31]=us&0xFF;}
 __device__ void mode_h36_pid(uint64_t ts,uint32_t pid,uint8_t p[32]){for(int i=0;i<8;i++)p[i]=(ts>>(i*8))&0xFF;p[8]=(pid>>24)&0xFF;p[9]=(pid>>16)&0xFF;p[10]=(pid>>8)&0xFF;p[11]=pid&0xFF;for(int i=12;i<32;i++)p[i]=0;}
-__device__ void mode_multisource(uint64_t ts,uint32_t pid,uint32_t up,uint32_t fm,uint8_t p[32]){uint8_t b[16];b[0]=ts&0xFF;b[1]=(ts>>8)&0xFF;b[2]=(ts>>16)&0xFF;b[3]=(ts>>24)&0xFF;b[4]=up&0xFF;b[5]=(up>>8)&0xFF;b[6]=(up>>16)&0xFF;b[7]=(up>>24)&0xFF;b[8]=fm&0xFF;b[9]=(fm>>8)&0xFF;b[10]=(fm>>16)&0xFF;b[11]=(fm>>24)&0xFF;b[12]=pid&0xFF;b[13]=(pid>>8)&0xFF;b[14]=0;b[15]=0;sha256(b,16,p);}
+__device__ void mode_multisource(uint64_t ts,uint32_t pid,uint32_t up,uint32_t fm,uint8_t p[32]){uint8_t b[16];b[0]=ts&0xFF;b[1]=(ts>>8)&0xFF;b[2]=(ts>>16)&0xFF;b[3]=(ts>>24)&0xFF;b[4]=up&0xFF;b[5]=(up>>8)&0xFF;b[6]=(up>>16)&0xFF;b[7]=(up>>24)&0xFF;b[8]=fm&0xFF;b[9]=(fm>>8)&0xFF;b[10]=(fm>>16)&0xFF;b[11]=(fm>>24)&0xFF;b[12]=pid&0xFF;b[13]=(pid>>8)&0xFF;b[14]=0;b[15]=0;sha256_hyp(b,16,p);}
 __device__ void mode_jitter(uint64_t bt,uint8_t j,uint8_t p[32]){mode_h36(bt+(uint64_t)j,p);}
 
 __device__ void mode_mwc_v8(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);uint32_t z1r=(ent^seed)*0xDEADu+0xDEADu;uint32_t z2r=(ent^seed)*0xBEEFu+0xBEEFu;
     uint32_t z1=z1r^(z1r>>30u);uint32_t z2=z2r^(z2r>>30u);uint8_t b[20];
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}
-    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256(b,20,priv);
+    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256_hyp(b,20,priv);
 }
 __device__ void mode_mwc_little(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t ent=(uint32_t)(ts&0xFFFFFFFFu);uint32_t z1r=(ent^seed)*0xDEADu+0xDEADu;uint32_t z2r=(ent^seed)*0xBEEFu+0xBEEFu;
     uint32_t z1=z1r^(z1r>>30u);uint32_t z2=z2r^(z2r>>30u);uint8_t b[20];
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=r&0xFF;b[i*4+1]=(r>>8)&0xFF;b[i*4+2]=(r>>16)&0xFF;b[i*4+3]=(r>>24)&0xFF;}
-    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256(b,20,priv);
+    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256_hyp(b,20,priv);
 }
 __device__ void mode_v8_3_0(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t z1=(uint32_t)(ts^seed)*0xDEADu+0xDEADu;z1^=z1>>30u;uint32_t z2=(uint32_t)(ts^seed)*0xBEEFu+0xBEEFu;uint8_t b[20];
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}
-    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256(b,20,priv);
+    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256_hyp(b,20,priv);
 }
 __device__ void mode_v8_3_4(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t z1r=((uint32_t)(ts&0xFFFFFFFFu)^seed)*0xDEADu+0xDEADu;uint32_t z2r=((uint32_t)(ts&0xFFFFFFFFu)^seed)*0xBEEFu+0xBEEFu;
     uint32_t z1=z1r^(z1r>>30u);uint32_t z2=z2r^(z2r>>30u);z1^=0xCAFE;z2^=0xCAFE;uint8_t b[20];
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}
-    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256(b,20,priv);
+    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256_hyp(b,20,priv);
 }
 
 __device__ void mode_randstorm(uint64_t ts,uint64_t idx,uint8_t priv[32]){
     uint8_t pool[256];uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     uint32_t z1=(seed)*0xDEADu+0xDEADu;uint32_t z2=(seed^0x1234u)*0xBEEFu+0xBEEFu;
     for(int i=0;i<64;i++){uint32_t r=mwc_v8(&z1,&z2);pool[i*4]=(r>>24)&0xFF;pool[i*4+1]=(r>>16)&0xFF;pool[i*4+2]=(r>>8)&0xFF;pool[i*4+3]=r&0xFF;if((i%4)==0){pool[i*4]^=((uint32_t)(ts>>(i%8)*8))&0xFF;}}
-    uint8_t h1[32];sha256(pool,256,h1);sha256(h1,32,priv);
+    uint8_t h1[32];sha256_hyp(pool,256,h1);sha256_hyp(h1,32,priv);
 }
 __device__ void mode_randstorm_little(uint64_t ts,uint64_t idx,uint8_t priv[32]){
     uint8_t pool[256];uint32_t seed=(uint32_t)(ts&0xFFFFFFFFu)+(uint32_t)(idx&0xFFFFFFFFu);
     uint32_t z1=(seed)*0xDEADu+0xDEADu;uint32_t z2=(seed^0x1234u)*0xBEEFu+0xBEEFu;
     for(int i=0;i<64;i++){uint32_t r=mwc_v8(&z1,&z2);pool[i*4]=r&0xFF;pool[i*4+1]=(r>>8)&0xFF;pool[i*4+2]=(r>>16)&0xFF;pool[i*4+3]=(r>>24)&0xFF;if((i%4)==0){pool[i*4]^=((uint32_t)(ts>>(i%8)*8))&0xFF;}}
-    uint8_t h1[32];sha256(pool,256,h1);sha256(h1,32,priv);
+    uint8_t h1[32];sha256_hyp(pool,256,h1);sha256_hyp(h1,32,priv);
 }
 __device__ void mode_bitcoincore_v3(uint64_t ts,uint32_t pid,uint8_t pat_id,uint8_t priv[32]){
     mode_core_v3_stack(ts,pid,pat_id,priv);uint8_t b[16];
-    for(int i=0;i<8;i++)b[i]=(ts>>(i*8))&0xFF;for(int i=0;i<4;i++)b[8+i]=(pid>>(i*8))&0xFF;for(int i=12;i<16;i++)b[i]=0;sha256(b,16,priv);
+    for(int i=0;i<8;i++)b[i]=(ts>>(i*8))&0xFF;for(int i=0;i<4;i++)b[8+i]=(pid>>(i*8))&0xFF;for(int i=12;i<16;i++)b[i]=0;sha256_hyp(b,16,priv);
 }
 __device__ void mode_android_rng(uint32_t seed,uint8_t priv[32]){
     uint32_t st=seed;for(int i=0;i<8;i++){uint32_t r=glibc_rand(&st);priv[i*4]=(r>>24)&0xFF;priv[i*4+1]=(r>>16)&0xFF;priv[i*4+2]=(r>>8)&0xFF;priv[i*4+3]=r&0xFF;}
 }
 __device__ void mode_instawallet(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t z1=(uint32_t)((ts^seed)&0xFFFFFFFFu)*0xDEAD+0xDEAD;uint32_t z2=(uint32_t)(((ts^seed)>>16)&0xFFFFFFFFu)*0xBEEF+0xBEEF;z1^=z1>>30;z2^=z2>>30;
-    uint8_t b[60];for(int i=0;i<15;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}sha256(b,60,priv);
+    uint8_t b[60];for(int i=0;i<15;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}sha256_hyp(b,60,priv);
 }
-__device__ void mode_mybitcoin(const uint8_t *un,const uint8_t *pw,uint8_t priv[32]){uint8_t b[128];int p=0;for(int i=0;un[i]&&p<64;i++)b[p++]=un[i];for(int i=0;pw[i]&&p<124;i++)b[p++]=pw[i];b[p++]=0;sha256(b,p,priv);}
+__device__ void mode_mybitcoin(const uint8_t *un,const uint8_t *pw,uint8_t priv[32]){uint8_t b[128];int p=0;for(int i=0;un[i]&&p<64;i++)b[p++]=un[i];for(int i=0;pw[i]&&p<124;i++)b[p++]=pw[i];b[p++]=0;sha256_hyp(b,p,priv);}
 __device__ void mode_bitaddress(uint64_t ts,uint32_t extra,uint8_t priv[32]){
     uint32_t z1=((uint32_t)(ts&0xFFFFFFFFu)^extra)*0xDEADu+0xDEADu;uint32_t z2=((uint32_t)((ts>>16)&0xFFFFFFFFu)^extra)*0xBEEFu+0xBEEFu;z1^=z1>>30u;z2^=z2>>30u;uint8_t b[20];
     for(int i=0;i<4;i++){uint32_t r=mwc_v8(&z1,&z2);b[i*4]=(r>>24)&0xFF;b[i*4+1]=(r>>16)&0xFF;b[i*4+2]=(r>>8)&0xFF;b[i*4+3]=r&0xFF;}
-    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256(b,20,priv);
+    for(int i=0;i<4;i++)b[16+i]=(uint8_t)((ts>>(i*8))&0xFF);sha256_hyp(b,20,priv);
 }
 __device__ void mode_mywallet(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t z1=(uint32_t)(ts^seed)*0xDEADu+0xDEADu;uint32_t z2=(uint32_t)((ts>>16)^seed)*0xBEEFu+0xBEEFu;uint8_t pool[128];
     for(int i=0;i<32;i++){uint32_t r=mwc_v8(&z1,&z2);pool[i*4]=(r>>24)&0xFF;pool[i*4+1]=(r>>16)&0xFF;pool[i*4+2]=(r>>8)&0xFF;pool[i*4+3]=r&0xFF;}
-    sha256(pool,128,priv);
+    sha256_hyp(pool,128,priv);
 }
-__device__ void mode_bitbills(uint64_t ts,uint8_t priv[32]){uint8_t b[8];for(int i=0;i<8;i++)b[i]=(ts>>(i*8))&0xFF;sha256(b,8,priv);uint8_t h2[32];for(int i=0;i<32;i++)h2[i]=priv[i];sha256(h2,32,priv);}
+__device__ void mode_bitbills(uint64_t ts,uint8_t priv[32]){uint8_t b[8];for(int i=0;i<8;i++)b[i]=(ts>>(i*8))&0xFF;sha256_hyp(b,8,priv);uint8_t h2[32];for(int i=0;i<32;i++)h2[i]=priv[i];sha256_hyp(h2,32,priv);}
 __device__ void mode_electrum(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint32_t mt[624];mt[0]=seed&0x7FFFFFFFu;for(int i=1;i<624;i++){mt[i]=1812433253u*(mt[i-1]^(mt[i-1]>>30))+i;}
     uint8_t b[32];int bp=0;
     for(int t=0;t<8;t++){int idx2=397;uint32_t y=(mt[0]&0x80000000u)|(mt[1]&0x7FFFFFFFu);uint32_t x=mt[idx2]^(y>>1);if(y&1)x^=0x9908B0DFu;b[bp++]=(x>>24)&0xFF;b[bp++]=(x>>16)&0xFF;b[bp++]=(x>>8)&0xFF;b[bp++]=x&0xFF;for(int i=0;i<623;i++)mt[i]=mt[i+1];mt[623]=x;}
-    sha256(b,32,priv);
+    sha256_hyp(b,32,priv);
 }
 __device__ void mode_spidermonkey(uint64_t ts,uint32_t pid,uint8_t priv[32]){
     uint64_t s0=(ts^(uint64_t)pid)*0x5851F42D+0x12345678;uint64_t s1=s0*0x9E3779B9+ts;uint8_t b[32];
     for(int i=0;i<8;i++){uint64_t x=s0;s0=s1;s1=x^(x<<12)^(s1>>19)^(s1<<28);uint64_t r=s0+s1;b[i*4]=r&0xFF;b[i*4+1]=(r>>8)&0xFF;b[i*4+2]=(r>>16)&0xFF;b[i*4+3]=(r>>24)&0xFF;}
-    sha256(b,32,priv);
+    sha256_hyp(b,32,priv);
 }
 __device__ void mode_jsc_webkit(uint64_t ts,uint32_t seed,uint8_t priv[32]){
     uint8_t sb[256];for(int i=0;i<256;i++)sb[i]=(uint8_t)i;
     uint8_t k[8];for(int i=0;i<8;i++)k[i]=(uint8_t)((ts>>(i*8))&0xFF);
     int j=0;for(int i=0;i<256;i++){j=(j+sb[i]+k[i%8])&0xFF;uint8_t t=sb[i];sb[i]=sb[j];sb[j]=t;}
     int x=0,y=0;uint8_t b[32];for(int n=0;n<32;n++){x=(x+1)&0xFF;y=(y+sb[x])&0xFF;uint8_t t=sb[x];sb[x]=sb[y];sb[y]=t;b[n]=sb[(sb[x]+sb[y])&0xFF];}
-    sha256(b,32,priv);
+    sha256_hyp(b,32,priv);
 }
 __device__ void mode_linux_libc_rand(uint32_t seed,uint8_t priv[32]){uint32_t st=seed;for(int i=0;i<8;i++){uint32_t r=glibc_rand(&st);priv[i*4]=(r>>24)&0xFF;priv[i*4+1]=(r>>16)&0xFF;priv[i*4+2]=(r>>8)&0xFF;priv[i*4+3]=r&0xFF;}}
 __device__ void mode_cn_brainwallet(uint32_t base_idx,uint32_t year,uint32_t qq,uint8_t priv[32]){
-    uint32_t phrases[16]={0x61766F,0x657969,0x626974,0x71696E,0x7A686F,0x736865,0x626569,0x736861,0x68616F,0x6A6961,0x6D616F,0x776F61,0x6A696E,0x626161,0x666131,0x6C6F76};
+    uint32_t phrases[16]={0x61766F,0x657969,0x626974,0x71696E,0x7A686F,0x736865,0x626569,0x736861,0x68616F,0x6A6961,0x6D616F,0x776F61,0x6A6961,0x626161,0x666131,0x6C6F76};
     uint32_t ph=phrases[base_idx%16];uint8_t b[32];
     for(int i=0;i<8;i++)b[i]=(ph>>(i*4))&0xFF;for(int i=0;i<8;i++)b[8+i]=(year>>(i*4))&0xFF;for(int i=0;i<8;i++)b[16+i]=(qq>>(i*4))&0xFF;for(int i=0;i<8;i++)b[24+i]=0;
-    sha256(b,32,priv);
+    sha256_hyp(b,32,priv);
 }
 __device__ uint32_t mode_short_r_brute(const uint8_t r[32],uint8_t priv_out[32]){
     uint32_t rl=0;for(uint32_t i=0;i<32;i++){uint8_t b=r[i];if(b==0)rl+=8;else{uint8_t m=0x80;while(m&b){rl++;m>>=1;}break;}}
