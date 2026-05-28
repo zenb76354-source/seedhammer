@@ -81,10 +81,10 @@ __device__ static void ripemd160d(const uint8_t in[64], uint8_t out[20]) {
 // -----------------------------------------------------------------
 // Device-side globals for bloom filter and patoshi targets
 // Initialized via cudaMemcpyToSymbol from host
-__device__ __constant__ uint32_t BLOOM_BITS;
-__device__ __constant__ uint8_t BLOOM_DATA[262144]; // 2M bits for 21953 targets
-__device__ __constant__ uint8_t PATOSHI_H160S[21953*20];
-__device__ __constant__ uint32_t N_PATOSHI;
+__device__ uint32_t BLOOM_BITS;
+__device__ uint8_t BLOOM_DATA[262144]; // 2M bits for 21953 targets
+__device__ uint8_t PATOSHI_H160S[21953*20];
+__device__ uint32_t N_PATOSHI;
 
 __device__ static int bloom_test_d(const uint8_t h160[20]) {
     uint32_t m = BLOOM_BITS - 1;

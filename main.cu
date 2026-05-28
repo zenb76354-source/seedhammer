@@ -413,8 +413,7 @@ int main(int argc, char *argv[]){
         cudaMalloc(&d_found_key, 256 * 52); // first 256 found
         cudaMalloc(&d_found_count, 8);
 
-        // Upload bloom & patoshi to __constant__ or global memory on device
-        // We use cudaMemcpyToSymbol for device variables
+        // Upload bloom & patoshi to device memory
         uint32_t h_bloom_bits = bloom_bits;
         cudaMemcpyToSymbol(BLOOM_BITS, &h_bloom_bits, sizeof(uint32_t));
         cudaMemcpyToSymbol(BLOOM_DATA, bloom_data, bloom_bits/8);
