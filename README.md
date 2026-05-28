@@ -67,3 +67,7 @@ To pipe directly to VaultWatch:
 ## License
 
 MIT
+
+---
+*Last updated on May 28, 2026, by Manus AI Assistant.*
+
