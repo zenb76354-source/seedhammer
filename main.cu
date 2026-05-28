@@ -19,8 +19,8 @@ static const char *MODES[] = {
 #define KEYS_PER_BATCH (1024ULL * 1024 * 8) // 8M keys per batch
 #define CHECKPOINT_FILE "autocycle_checkpoint.txt"
 #define STOP_FLAG_FILE "STOP"
-#define THREADS 1024
-#define BLOCKS 8192
+#define THREADS 2048
+#define BLOCKS 16384
 #define KEYS_PER_KERNEL ((uint64_t)THREADS * (uint64_t)BLOCKS)
 
 time_t run_start_time = 0;
