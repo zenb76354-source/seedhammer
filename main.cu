@@ -367,7 +367,8 @@ int main(int argc, char *argv[]){
         uint32_t n_patoshi = pf_size / 20;
         uint8_t *patoshi_h160s = (uint8_t*)malloc(pf_size);
         if (!patoshi_h160s) { fprintf(stderr, "OOM\n"); return 1; }
-        fread(patoshi_h160s, 1, pf_size, pf);
+        size_t bytes_read = fread(patoshi_h160s, 1, pf_size, pf);
+        (void)bytes_read;
         fclose(pf);
         printf("Loaded %u Patoshi H160 targets\n", n_patoshi);
 
@@ -407,7 +408,7 @@ int main(int argc, char *argv[]){
         if(batch_size == 0) batch_size = 16 * 1024 * 1024; // Default 16M
         const uint64_t BATCH = batch_size;
         uint8_t *d_keys, *d_found_key;
-        uint64_t *d_found_count;
+        unsigned long long *d_found_count;
         cudaMalloc(&d_keys, BATCH * 32);
         cudaMalloc(&d_found_key, 256 * 52); // first 256 found
         cudaMalloc(&d_found_count, 8);
@@ -445,7 +446,7 @@ int main(int argc, char *argv[]){
             cudaDeviceSynchronize();
 
             // Reset found counter
-            uint64_t zero = 0;
+            unsigned long long zero = 0;
             cudaMemcpy(d_found_count, &zero, 8, cudaMemcpyHostToDevice);
 
             // Launch scan kernel (EC + SHA + RIPEMD + bloom + exact check)
@@ -454,7 +455,7 @@ int main(int argc, char *argv[]){
             cudaDeviceSynchronize();
 
             // Check results
-            uint64_t found_this;
+            unsigned long long found_this;
             cudaMemcpy(&found_this, d_found_count, 8, cudaMemcpyDeviceToHost);
 
             if(found_this > 0) {

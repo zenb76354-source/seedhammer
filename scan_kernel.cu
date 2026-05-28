@@ -113,7 +113,7 @@ __device__ static int exact_match_d(const uint8_t h160[20]) {
 __global__ void scan_kernel(
     const uint8_t *keys,
     uint64_t       n_keys,
-    uint64_t      *found_count,
+    unsigned long long *found_count,
     uint8_t       *found_key_out  // 32 bytes per found key
 ) {
     uint64_t idx = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
@@ -142,7 +142,7 @@ __global__ void scan_kernel(
 
     // check compressed
     if(bloom_test_d(hc) && exact_match_d(hc)){
-        uint64_t pos = atomicAdd(found_count, 1);
+        unsigned long long pos = atomicAdd(found_count, 1ULL);
         if(pos < 256) { // store first 256 found keys
             uint8_t *dst = found_key_out + pos * 52; // 32 priv + 20 h160
             for(int b=0;b<32;b++) dst[b]=pk[b];
@@ -161,7 +161,7 @@ __global__ void scan_kernel(
 
     // check uncompressed
     if(bloom_test_d(hu) && exact_match_d(hu)){
-        uint64_t pos = atomicAdd(found_count, 1);
+        unsigned long long pos = atomicAdd(found_count, 1ULL);
         if(pos < 256) {
             uint8_t *dst = found_key_out + pos * 52;
             for(int b=0;b<32;b++) dst[b]=pk[b];
