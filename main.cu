@@ -13,6 +13,8 @@
 #include "math256.h"
 #include "scan_kernel.cu"
 
+uint64_t batch_size = 0;
+
 int main(int argc, char **argv) {
     if(argc < 2) return 1;
     char mode_char = argv[1][0];
@@ -45,14 +47,14 @@ int main(int argc, char **argv) {
 
     uint32_t bloom_bits = 1 << 18;
     uint8_t *bloom_data = (uint8_t*)calloc(1, bloom_bits/8);
-    for(int i=0; i<n_patoshi; i++) bloom_data[i] = 0xFF; // Simple filler
+    memset(bloom_data, 0xFF, bloom_bits/8);
 
     cudaSetDevice(0);
     uint64_t seed_range = (uint64_t)(seed_end - seed_start) + 1;
     uint64_t ts_range = ts_end - ts_start + 1;
     uint64_t total_keys = ts_range * seed_range;
 
-    if(batch_size == 0) batch_size = 1 * 1024 * 1024; // Smaller batches for complex kernel
+    if(batch_size == 0) batch_size = 1 * 1024 * 1024;
     const uint64_t BATCH = batch_size;
     uint8_t *d_found_key;
     unsigned long long *d_found_count;
