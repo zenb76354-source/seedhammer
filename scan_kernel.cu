@@ -10,18 +10,16 @@
 
 // ================================================================
 // Device-side constants (set via cudaMemcpyToSymbol from main.cu)
+// Small items stay in __constant__; large arrays (>64KB) use __device__
 // ================================================================
 __device__ __constant__ uint32_t DEV_BLOOM_BITS;
-__device__ __constant__ uint8_t  DEV_BLOOM_DATA[262144]; // 1<<21 bits = 256KB
 __device__ __constant__ uint32_t DEV_N_TARGETS;
-// Space for up to 256 targets (51 used)
-__device__ __constant__ uint8_t  DEV_TARGETS[256 * 20];
 
 // ================================================================
 // Bloom filter check — MUST BE IDENTICAL to bloom_test() in vaultwatch-cuda.cu
 // Uses 7 hash positions: 5 from direct H160 bytes + 2 from mangled hashes
 // ================================================================
-__device__ static bool bloom_check_gpu(const uint8_t h160[20]) {
+__device__ static bool bloom_check_gpu(const uint8_t h160[20], const uint8_t *bloom_data) {
     uint32_t m = DEV_BLOOM_BITS - 1;
 
     // Same 7 hashes as vaultwatch-cuda.cu's bloom_test()
@@ -36,7 +34,7 @@ __device__ static bool bloom_check_gpu(const uint8_t h160[20]) {
     };
 
     for (int i = 0; i < 7; i++)
-        if (!(DEV_BLOOM_DATA[h[i] >> 3] & (1 << (h[i] & 7))))
+        if (!(bloom_data[h[i] >> 3] & (1 << (h[i] & 7))))
             return false;
     return true;
 }
@@ -67,14 +65,14 @@ static void bloom_build(uint8_t *bloom_data, uint32_t bloom_bits,
 // ================================================================
 // Exact match check (binary search on DEV_TARGETS)
 // ================================================================
-__device__ static bool exact_match_gpu(const uint8_t h160[20]) {
+__device__ static bool exact_match_gpu(const uint8_t h160[20], const uint8_t *targets) {
     int lo = 0, hi = (int)DEV_N_TARGETS - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
         int cmp = 0;
         for (int i = 0; i < 20 && cmp == 0; i++) {
-            if (h160[i] < DEV_TARGETS[mid*20+i]) cmp = -1;
-            else if (h160[i] > DEV_TARGETS[mid*20+i]) cmp = 1;
+            if (h160[i] < targets[mid*20+i]) cmp = -1;
+            else if (h160[i] > targets[mid*20+i]) cmp = 1;
         }
         if (cmp == 0) return true;
         else if (cmp < 0) hi = mid - 1;
@@ -141,7 +139,9 @@ __global__ void super_scan_kernel(
     uint32_t   seed_range,
     uint64_t   count,
     unsigned long long *found_count,
-    uint8_t   *found_out   // 52 bytes per result: 32 priv + 20 h160
+    uint8_t   *found_out,   // 52 bytes per result: 32 priv + 20 h160
+    const uint8_t *bloom_data,
+    const uint8_t *targets
 ) {
     uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= count) return;
@@ -188,11 +188,11 @@ __global__ void super_scan_kernel(
     bool bloom_pass = false;
     bool is_compressed = false;
 
-    if (bloom_check_gpu(h160_comp)) {
+    if (bloom_check_gpu(h160_comp, bloom_data)) {
         bloom_pass = true;
         is_compressed = true;
     }
-    if (!bloom_pass && bloom_check_gpu(h160_uncomp)) {
+    if (!bloom_pass && bloom_check_gpu(h160_uncomp, bloom_data)) {
         bloom_pass = true;
         is_compressed = false;
     }
@@ -201,7 +201,7 @@ __global__ void super_scan_kernel(
     bool exact_found = false;
     if (bloom_pass) {
         const uint8_t *h = is_compressed ? h160_comp : h160_uncomp;
-        if (exact_match_gpu(h)) {
+        if (exact_match_gpu(h, targets)) {
             exact_found = true;
         }
     }

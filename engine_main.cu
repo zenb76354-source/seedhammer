@@ -59,10 +59,27 @@ int main(int argc, char **argv) {
     uint32_t n_targets = NUM_TARGETS;
     const uint8_t *targets = (const uint8_t*)TARGET_H160;
     fprintf(stderr, "Loaded %u targets from targets.h\n", n_targets);
+    // Host-side copies for display (avoid __constant__ reads from CPU)
+    static const char *TARGET_LABELS_HOST[NUM_TARGETS] = {
+        "N1","H1","H2","H3","H4","H5","H6","H7","H8","H9","H10",
+        "H11","H12","H13","H14","H15","H16","H17","H18","H19","H20",
+        "H21","H22","H23","H24","H25","H26","H27","H28","H29","H30",
+        "H31","H32","H33","H34","H35","H36","H37","H38","H39","H40",
+        "H41","H42","H43","H44","H45","H46","H47","H48","H49","H50"
+    };
+    static const double TARGET_BALANCE_HOST[NUM_TARGETS] = {
+        1400.98, 1260.0, 820.30, 693.7, 650.45, 500.0, 460.40, 430.9,
+        430.31, 408.0, 403.25, 300.01, 290.0, 273.08, 256.32, 253.93,
+        250.0, 249.14, 235.49, 228.61, 224.40, 224.00, 212.31, 212.0,
+        200.05, 200.03, 200.0, 200.0, 200.0, 200.0, 200.0, 199.41,
+        197.47, 195.47, 186.87, 186.32, 186.19, 184.67, 176.0, 172.26,
+        168.70, 165.92, 165.2, 163.0, 161.97, 161.47, 161.0, 160.29,
+        159.31, 155.91, 1400.98
+    };
     for (uint32_t ti = 0; ti < n_targets; ti++) {
         const char *addr = TARGET_ADDRS[ti];
-        const char *lab = TARGET_LABELS[ti];
-        double bal = TARGET_BALANCE[ti];
+        const char *lab = TARGET_LABELS_HOST[ti];
+        double bal = TARGET_BALANCE_HOST[ti];
         fprintf(stderr, "  [%2u] %s %-6s %8.2f BTC\n", ti, lab, addr, bal);
     }
 
@@ -74,11 +91,18 @@ int main(int argc, char **argv) {
     // GPU Init
     CUDA_ERR(cudaSetDevice(0));
     
-    // Copy to Constant Memory (Correct DEV_ prefix names)
+    // Copy small constants via cudaMemcpyToSymbol; large arrays via global memory
     CUDA_ERR(cudaMemcpyToSymbol(DEV_BLOOM_BITS, &bloom_bits, sizeof(uint32_t)));
-    CUDA_ERR(cudaMemcpyToSymbol(DEV_BLOOM_DATA, bloom_data, bloom_bits / 8));
     CUDA_ERR(cudaMemcpyToSymbol(DEV_N_TARGETS, &n_targets, sizeof(uint32_t)));
-    CUDA_ERR(cudaMemcpyToSymbol(DEV_TARGETS, targets, n_targets * 20));
+
+    // Bloom data (256KB) and targets (5KB) exceed 64KB constant memory limit
+    // Allocate global memory and pass pointers to kernel
+    uint8_t *d_bloom_data;
+    uint8_t *d_targets;
+    CUDA_ERR(cudaMalloc(&d_bloom_data, bloom_bits / 8));
+    CUDA_ERR(cudaMemcpy(d_bloom_data, bloom_data, bloom_bits / 8, cudaMemcpyHostToDevice));
+    CUDA_ERR(cudaMalloc(&d_targets, n_targets * 20));
+    CUDA_ERR(cudaMemcpy(d_targets, targets, n_targets * 20, cudaMemcpyHostToDevice));
 
     // Result buffers
     uint8_t *d_found_key;
@@ -106,7 +130,8 @@ int main(int argc, char **argv) {
         // super_scan_kernel now correctly uses mode for generation
         super_scan_kernel<<<blocks, threads>>>(mode_char, ts_start + (processed / seed_range), 
                                                seed_start + (uint32_t)(processed % seed_range), 
-                                               seed_range, current_batch, d_found_count, d_found_key);
+                                               seed_range, current_batch, d_found_count, d_found_key,
+                                               d_bloom_data, d_targets);
         CUDA_ERR(cudaDeviceSynchronize());
 
         unsigned long long h_found_count;
@@ -146,6 +171,8 @@ int main(int argc, char **argv) {
     printf("\nScan complete. Processed %lu keys.\n", processed);
     cudaFree(d_found_key);
     cudaFree(d_found_count);
+    cudaFree(d_bloom_data);
+    cudaFree(d_targets);
     free(bloom_data);
     return 0;
 }
