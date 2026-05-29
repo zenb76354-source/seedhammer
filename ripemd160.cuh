@@ -7,8 +7,13 @@
 
 #define ROL32_RM(x,n) (((x)<<(n))|((x)>>(32-(n))))
 
+#ifdef __CUDACC__
+__device__ __constant__ const uint32_t RMD_K_RM[5]={0x00000000,0x5a827999,0x6ed9eba1,0x8f1bbcdc,0xa953fd4e};
+__device__ __constant__ const uint32_t RMD_KP_RM[5]={0x50a28be6,0x5c4dd124,0x6d703ef3,0x7a6d76e9,0x00000000};
+#else
 static const uint32_t RMD_K_RM[5]={0x00000000,0x5a827999,0x6ed9eba1,0x8f1bbcdc,0xa953fd4e};
 static const uint32_t RMD_KP_RM[5]={0x50a28be6,0x5c4dd124,0x6d703ef3,0x7a6d76e9,0x00000000};
+#endif
 
 D_FUNC void ripemd160(const uint8_t in[64],uint8_t out[20]){
     uint32_t h[5]={0x67452301,0xefcdab89,0x98badcfe,0x10325476,0xc3d2e1f0},x[16];
