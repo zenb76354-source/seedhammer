@@ -103,11 +103,27 @@ __device__ static void privkey_hash160_both_cu(const uint8_t priv[32],
     // HASH160 for compressed
     uint8_t sha32[32];
     sha256(pub_comp, 33, sha32);
-    ripemd160(sha32, 32, h160_comp);
+    // ripemd160 expects 64-byte block with SHA256 padding
+    uint8_t rm_block[64];
+    for(int i=0;i<32;i++) rm_block[i] = sha32[i];
+    rm_block[32] = 0x80;
+    for(int i=33;i<56;i++) rm_block[i] = 0;
+    uint64_t bits32 = 32*8;
+    rm_block[56] = (uint8_t)(bits32); rm_block[57] = (uint8_t)(bits32>>8);
+    rm_block[58] = (uint8_t)(bits32>>16); rm_block[59] = (uint8_t)(bits32>>24);
+    rm_block[60] = 0; rm_block[61] = 0; rm_block[62] = 0; rm_block[63] = 0;
+    ripemd160(rm_block, h160_comp);
     
     // HASH160 for uncompressed
     sha256(pub_uncomp, 65, sha32);
-    ripemd160(sha32, 32, h160_uncomp);
+    for(int i=0;i<32;i++) rm_block[i] = sha32[i];
+    rm_block[32] = 0x80;
+    for(int i=33;i<56;i++) rm_block[i] = 0;
+    bits32 = 32*8;
+    rm_block[56] = (uint8_t)(bits32); rm_block[57] = (uint8_t)(bits32>>8);
+    rm_block[58] = (uint8_t)(bits32>>16); rm_block[59] = (uint8_t)(bits32>>24);
+    rm_block[60] = 0; rm_block[61] = 0; rm_block[62] = 0; rm_block[63] = 0;
+    ripemd160(rm_block, h160_uncomp);
 }
 
 // ================================================================
