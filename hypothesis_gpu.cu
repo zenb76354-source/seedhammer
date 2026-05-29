@@ -32,7 +32,11 @@
 #define sig0(x) (ROTR32(x,7)^ROTR32(x,18)^((x)>>3))
 #define sig1(x) (ROTR32(x,17)^ROTR32(x,19)^((x)>>10))
 
+#ifdef __CUDACC__
+__device__ __constant__ const uint32_t K256[64]={
+#else
 static const uint32_t K256[64]={
+#endif
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
     0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
