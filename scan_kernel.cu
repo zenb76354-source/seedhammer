@@ -156,12 +156,17 @@ __global__ void super_scan_kernel(
     }
 
     // === STEP 2: EC k*G ===
+    // Convert big-endian private key bytes to little-endian u64 limbs
+    // (matching privkey_bytes_to_scalar in ec_jacobian.h)
     uint64_t k[4];
-    for(int i=0;i<4;i++)
-        k[i] = ((uint64_t)pk[i*8]<<56)|((uint64_t)pk[i*8+1]<<48)|
-               ((uint64_t)pk[i*8+2]<<40)|((uint64_t)pk[i*8+3]<<32)|
-               ((uint64_t)pk[i*8+4]<<24)|((uint64_t)pk[i*8+5]<<16)|
-               ((uint64_t)pk[i*8+6]<<8)|(uint64_t)pk[i*8+7];
+    k[0] = (uint64_t)pk[31] | (uint64_t)pk[30]<<8 | (uint64_t)pk[29]<<16 | (uint64_t)pk[28]<<24 |
+           (uint64_t)pk[27]<<32 | (uint64_t)pk[26]<<40 | (uint64_t)pk[25]<<48 | (uint64_t)pk[24]<<56;
+    k[1] = (uint64_t)pk[23] | (uint64_t)pk[22]<<8 | (uint64_t)pk[21]<<16 | (uint64_t)pk[20]<<24 |
+           (uint64_t)pk[19]<<32 | (uint64_t)pk[18]<<40 | (uint64_t)pk[17]<<48 | (uint64_t)pk[16]<<56;
+    k[2] = (uint64_t)pk[15] | (uint64_t)pk[14]<<8 | (uint64_t)pk[13]<<16 | (uint64_t)pk[12]<<24 |
+           (uint64_t)pk[11]<<32 | (uint64_t)pk[10]<<40 | (uint64_t)pk[9]<<48  | (uint64_t)pk[8]<<56;
+    k[3] = (uint64_t)pk[7]  | (uint64_t)pk[6]<<8  | (uint64_t)pk[5]<<16  | (uint64_t)pk[4]<<24  |
+           (uint64_t)pk[3]<<32  | (uint64_t)pk[2]<<40  | (uint64_t)pk[1]<<48  | (uint64_t)pk[0]<<56;
 
     JacobianPoint P, G;
     point_mul_g(&P, k);
